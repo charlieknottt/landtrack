@@ -1,7 +1,7 @@
 export const COUNTY_COLORS: Record<string, string> = {
   Bedford: "#e97316",
   Potter: "#2563eb",
-  Huntingdon: "#16a34a",
+  Huntingdon: "#eab308",
   Clinton: "#9333ea",
   Cameron: "#dc2626",
   Clearfield: "#0891b2",
