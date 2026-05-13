@@ -412,6 +412,7 @@ export default function LandTrackApp() {
     const map = mapRef.current;
     if (!L || !map || !data) return;
 
+    const reopenId = popupOpenRef.current;
     if (geoLayerRef.current) map.removeLayer(geoLayerRef.current);
     markersRef.current.clear();
 
@@ -467,7 +468,6 @@ export default function LandTrackApp() {
       }
     }
 
-    const reopenId = popupOpenRef.current;
     if (reopenId) {
       const reopenLayer = markersRef.current.get(reopenId);
       if (reopenLayer) (reopenLayer as LType.Polygon).openPopup();
