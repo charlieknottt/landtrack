@@ -63,7 +63,7 @@ export default function LandTrackApp() {
   const [bordersForest, setBordersForest] = useState(false);
   const [detailParcel, setDetailParcel] = useState<ParcelProperties | null>(null);
   const [totalInView, setTotalInView] = useState(0);
-  const [favorites, setFavorites] = useState<FavoritesMap>(loadFavorites);
+  const [favorites, setFavorites] = useState<FavoritesMap>({});
   const [favoritesOpen, setFavoritesOpen] = useState(false);
   const [mapStyle, setMapStyle] = useState<"street" | "satellite">("street");
   const [showContours, setShowContours] = useState(false);
@@ -87,7 +87,11 @@ export default function LandTrackApp() {
   }, []);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user) {
+      setFavorites({});
+      saveFavorites({});
+      return;
+    }
     let cancelled = false;
     supabase.from("favorites").select("*").eq("user_id", user.id).then(({ data: rows }) => {
       if (cancelled || !rows) return;
