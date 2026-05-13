@@ -143,7 +143,7 @@ export default function Home() {
       if (maxSaleYear < 2026 && p.sale_year && typeof p.sale_year === "number" && p.sale_year > maxSaleYear) return false;
       if (searchQuery) {
         const q = searchQuery.toLowerCase();
-        const hay = `${p.owner_name} ${p.municipality} ${p.taxidnum} ${p.mailing_city} ${p.situs} ${p.county}`.toLowerCase();
+        const hay = `${p.owner_name} ${p.municipality} ${p.taxidnum} ${p.mailing_street} ${p.mailing_city} ${p.mailing_state} ${p.mailing_zip} ${p.situs} ${p.county} ${p.land_use} ${p.acres} ${p.sale_year} ${p.sale_amt} ${p.deed_book} ${p.deed_page}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
