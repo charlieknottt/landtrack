@@ -318,6 +318,15 @@ export default function LandTrackApp() {
 
     layer.addTo(map);
     geoLayerRef.current = layer;
+
+    if (selectedUid) {
+      const selLayer = markersRef.current.get(selectedUid);
+      if (selLayer && "setStyle" in selLayer) {
+        selLayer.setStyle({ color: "#0a0a0a", weight: 3, fillOpacity: 0.5 });
+        selLayer.bringToFront();
+        (selLayer as LType.Polygon).openPopup();
+      }
+    }
   }, [data]);
 
   const prevSelectedRef = useRef<string | null>(null);
@@ -481,6 +490,11 @@ export default function LandTrackApp() {
                 <input type="checkbox" checked={bordersForest}
                   onChange={(e) => setBordersForest(e.target.checked)} className="w-3.5 h-3.5 accent-[#16a34a] rounded" />
                 <span className="text-xs text-[#3f3f46]">Borders state forest / game land</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={showForests}
+                  onChange={(e) => setShowForests(e.target.checked)} className="w-3.5 h-3.5 accent-[#16a34a] rounded" />
+                <span className="text-xs text-[#3f3f46]">Show state forest boundaries on map</span>
               </label>
             </div>
 
