@@ -19,12 +19,12 @@ HEADERS = {"User-Agent": "PA-Rural-Land-Research/1.0"}
 
 SOURCES = {
     "state_forest": {
-        "url": "https://mapservices.pasda.psu.edu/server/rest/services/pasda/DCNR/MapServer/6",
+        "url": "https://www.gis.dcnr.pa.gov/agsprod/rest/services/BOF/State_Forests/MapServer/4",
         "name_field": "SF_Name",
         "type_label": "State Forest",
     },
     "game_land": {
-        "url": "https://mapservices.pasda.psu.edu/server/rest/services/pasda/PennsylvaniaGameCommission/MapServer/4",
+        "url": "https://pgcmaps.pa.gov/arcgis/rest/services/PGC/NEW_PUBLIC/MapServer/17",
         "name_field": "NAME",
         "type_label": "State Game Land",
     },

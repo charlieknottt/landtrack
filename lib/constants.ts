@@ -5,6 +5,7 @@ export const COUNTY_COLORS: Record<string, string> = {
   Clinton: "#9333ea",
   Cameron: "#dc2626",
   Clearfield: "#0891b2",
+  Lycoming: "#d946ef",
 };
 
 export const LAND_USE_LABELS: Record<string, string> = {

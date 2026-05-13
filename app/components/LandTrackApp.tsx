@@ -3,7 +3,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import type LType from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { fetchParcels, fetchStats } from "@/lib/api";
+import { fetchParcels, fetchStats, fetchForests } from "@/lib/api";
 import { COUNTY_COLORS, LAND_USE_LABELS } from "@/lib/constants";
 import type { ParcelProperties, GeoJSONCollection, GeoJSONFeature, StatsResponse, SortField, SortDir } from "@/lib/types";
 
@@ -60,8 +60,11 @@ export default function LandTrackApp() {
   const [totalInView, setTotalInView] = useState(0);
   const [favorites, setFavorites] = useState<FavoritesMap>(loadFavorites);
   const [favoritesOpen, setFavoritesOpen] = useState(false);
-  const [mapStyle, setMapStyle] = useState<"street" | "satellite">("street");
+  const [mapStyle, setMapStyle] = useState<"street" | "satellite" | "terrain">("street");
+  const [showForests, setShowForests] = useState(false);
   const tileLayerRef = useRef<LType.TileLayer | null>(null);
+  const hillshadeRef = useRef<LType.TileLayer | null>(null);
+  const forestLayerRef = useRef<LType.GeoJSON | null>(null);
 
   const toggleFavorite = useCallback((p: ParcelProperties) => {
     setFavorites((prev) => {
@@ -142,10 +145,12 @@ export default function LandTrackApp() {
     const urls: Record<string, string> = {
       street: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
       satellite: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      terrain: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
     };
     const attribs: Record<string, string> = {
       street: "&copy; OpenStreetMap contributors",
       satellite: "&copy; Esri, Maxar, Earthstar Geographics",
+      terrain: "&copy; Esri, Maxar | Hillshade: Esri",
     };
     const tile = L.tileLayer(urls[mapStyle], {
       attribution: attribs[mapStyle],
@@ -153,7 +158,74 @@ export default function LandTrackApp() {
     }).addTo(map);
     tileLayerRef.current = tile;
     tile.bringToBack();
+
+    if (hillshadeRef.current) {
+      map.removeLayer(hillshadeRef.current);
+      hillshadeRef.current = null;
+    }
+    if (mapStyle === "terrain") {
+      const hs = L.tileLayer(
+        "https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}",
+        { opacity: 0.45, maxZoom: 19 }
+      ).addTo(map);
+      hillshadeRef.current = hs;
+    }
   }, [mapStyle]);
+
+  useEffect(() => {
+    const L = leafletRef.current;
+    const map = mapRef.current;
+    if (!L || !map) return;
+
+    if (forestLayerRef.current) {
+      map.removeLayer(forestLayerRef.current);
+      forestLayerRef.current = null;
+    }
+
+    if (!showForests) return;
+
+    const loadForests = async () => {
+      const bounds = map.getBounds();
+      const bbox = `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`;
+      try {
+        const data = await fetchForests(bbox);
+        if (forestLayerRef.current) map.removeLayer(forestLayerRef.current);
+        const layer = L.geoJSON(data as unknown as GeoJSON.GeoJsonObject, {
+          style: () => ({
+            color: "#16a34a",
+            weight: 1.5,
+            fillColor: "#16a34a",
+            fillOpacity: 0.15,
+            dashArray: "4 4",
+          }),
+          onEachFeature: (feature, lyr) => {
+            const name = feature.properties?.name || "Unknown";
+            const type = feature.properties?.type || "";
+            lyr.bindPopup(
+              `<div style="font-family:system-ui;font-size:13px;padding:4px">
+                <strong style="color:#16a34a">${name}</strong>
+                <div style="font-size:11px;color:#71717a">${type}</div>
+              </div>`
+            );
+          },
+        });
+        layer.addTo(map);
+        layer.bringToBack();
+        if (tileLayerRef.current) tileLayerRef.current.bringToBack();
+        forestLayerRef.current = layer;
+      } catch (err) {
+        console.error("Failed to load forests:", err);
+      }
+    };
+
+    loadForests();
+
+    const onMove = () => {
+      loadForests();
+    };
+    map.on("moveend", onMove);
+    return () => { map.off("moveend", onMove); };
+  }, [showForests]);
 
   const loadParcels = useCallback(async (map?: LType.Map) => {
     const m = map || mapRef.current;
@@ -519,7 +591,18 @@ export default function LandTrackApp() {
 
         <div className="flex-1 relative">
           <div ref={mapContainerRef} id="map" />
-          <div className="absolute top-3 right-3 z-[1000] flex gap-1 bg-white rounded-lg shadow-md border border-[#e4e4e7] p-0.5">
+          <div className="absolute top-3 right-3 z-[1000] flex items-center gap-2">
+            <button
+              onClick={() => setShowForests((v) => !v)}
+              className={`px-2.5 py-1 text-[11px] font-medium rounded-lg shadow-md border transition-colors ${
+                showForests
+                  ? "bg-[#16a34a] text-white border-[#16a34a]"
+                  : "bg-white text-[#52525b] border-[#e4e4e7] hover:bg-[#f4f4f5]"
+              }`}
+            >
+              {showForests ? "Hide Forests" : "Show Forests"}
+            </button>
+          <div className="flex gap-1 bg-white rounded-lg shadow-md border border-[#e4e4e7] p-0.5">
             <button
               onClick={() => setMapStyle("street")}
               className={`px-2.5 py-1 text-[11px] font-medium rounded transition-colors ${
@@ -536,6 +619,15 @@ export default function LandTrackApp() {
             >
               Satellite
             </button>
+            <button
+              onClick={() => setMapStyle("terrain")}
+              className={`px-2.5 py-1 text-[11px] font-medium rounded transition-colors ${
+                mapStyle === "terrain" ? "bg-[#0a0a0a] text-white" : "text-[#52525b] hover:bg-[#f4f4f5]"
+              }`}
+            >
+              Terrain
+            </button>
+          </div>
           </div>
         </div>
 
