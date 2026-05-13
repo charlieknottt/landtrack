@@ -372,7 +372,6 @@ export default function LandTrackApp() {
       if (selLayer && "setStyle" in selLayer) {
         selLayer.setStyle({ color: "#0a0a0a", weight: 2, fillOpacity: 0.35 });
         selLayer.bringToFront();
-        (selLayer as LType.Polygon).openPopup();
       }
     }
   }, [data]);
