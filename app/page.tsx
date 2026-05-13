@@ -81,7 +81,6 @@ export default function Home() {
   const [minAcres, setMinAcres] = useState(20);
   const [maxAcres, setMaxAcres] = useState(10000);
   const [stateFilter, setStateFilter] = useState("");
-  const [landUseFilter, setLandUseFilter] = useState("");
   const [countyFilter, setCountyFilter] = useState("");
   const [maxSaleYear, setMaxSaleYear] = useState(2026);
   const [searchQuery, setSearchQuery] = useState("");
@@ -140,7 +139,6 @@ export default function Home() {
       if (p.acres < minAcres || p.acres > maxAcres) return false;
       if (countyFilter && p.county !== countyFilter) return false;
       if (stateFilter && p.mailing_state !== stateFilter) return false;
-      if (landUseFilter && p.land_use !== landUseFilter) return false;
       if (addressMismatchOnly && !addressesDiffer(p)) return false;
       if (maxSaleYear < 2026 && p.sale_year && typeof p.sale_year === "number" && p.sale_year > maxSaleYear) return false;
       if (searchQuery) {
@@ -150,7 +148,7 @@ export default function Home() {
       }
       return true;
     });
-  }, [data, minAcres, maxAcres, stateFilter, landUseFilter, countyFilter, maxSaleYear, searchQuery, addressMismatchOnly]);
+  }, [data, minAcres, maxAcres, stateFilter, countyFilter, maxSaleYear, searchQuery, addressMismatchOnly]);
 
   const sorted = useMemo(() => {
     const arr = [...filtered];
@@ -184,11 +182,15 @@ export default function Home() {
     return Array.from(s).sort();
   }, [data]);
 
-  const landUses = useMemo(() => {
-    if (!data) return [];
-    const s = new Set(data.features.map((f) => f.properties.land_use).filter(Boolean));
-    return Array.from(s).sort();
-  }, [data]);
+  const initialDetailSet = useRef(false);
+  useEffect(() => {
+    if (!initialDetailSet.current && sorted.length > 0) {
+      initialDetailSet.current = true;
+      const first = sorted[0].properties;
+      setDetailParcel(first);
+      setSelectedUid(uid(first));
+    }
+  }, [sorted]);
 
   const countyCounts = useMemo(() => {
     if (!data) return {};
@@ -384,23 +386,13 @@ export default function Home() {
                     className="w-full px-2 py-1 text-sm border border-[#e4e4e7] rounded focus:outline-none focus:ring-2 focus:ring-[#e97316]" />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-[10px] text-[#71717a] font-medium uppercase tracking-wider mb-0.5">Owner State</label>
-                  <select value={stateFilter} onChange={(e) => setStateFilter(e.target.value)}
-                    className="w-full px-2 py-1 text-sm border border-[#e4e4e7] rounded focus:outline-none focus:ring-2 focus:ring-[#e97316] bg-white">
-                    <option value="">All States</option>
-                    {states.map((s) => <option key={s} value={s}>{s}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-[10px] text-[#71717a] font-medium uppercase tracking-wider mb-0.5">Land Use</label>
-                  <select value={landUseFilter} onChange={(e) => setLandUseFilter(e.target.value)}
-                    className="w-full px-2 py-1 text-sm border border-[#e4e4e7] rounded focus:outline-none focus:ring-2 focus:ring-[#e97316] bg-white">
-                    <option value="">All Types</option>
-                    {landUses.map((u) => <option key={u} value={u}>{LAND_USE_LABELS[u] || u}</option>)}
-                  </select>
-                </div>
+              <div>
+                <label className="block text-[10px] text-[#71717a] font-medium uppercase tracking-wider mb-0.5">Owner State</label>
+                <select value={stateFilter} onChange={(e) => setStateFilter(e.target.value)}
+                  className="w-full px-2 py-1 text-sm border border-[#e4e4e7] rounded focus:outline-none focus:ring-2 focus:ring-[#e97316] bg-white">
+                  <option value="">All States</option>
+                  {states.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
               </div>
               <div>
                 <label className="block text-[10px] text-[#71717a] font-medium uppercase tracking-wider mb-0.5">Last Sale Before</label>
