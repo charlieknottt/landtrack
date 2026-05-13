@@ -256,6 +256,7 @@ export default function LandTrackApp() {
         })
         .catch(() => {});
 
+      loadParcels(map);
     });
     return () => { cancelled = true; };
   }, [loading]);
