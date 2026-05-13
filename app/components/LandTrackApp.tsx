@@ -6,6 +6,9 @@ import "leaflet/dist/leaflet.css";
 import { fetchParcels, fetchStats, fetchForests } from "@/lib/api";
 import { COUNTY_COLORS, LAND_USE_LABELS } from "@/lib/constants";
 import type { ParcelProperties, GeoJSONCollection, GeoJSONFeature, StatsResponse, SortField, SortDir } from "@/lib/types";
+import { supabase } from "@/lib/supabase";
+import type { User } from "@supabase/supabase-js";
+import AuthModal from "./AuthModal";
 
 interface FavoriteEntry {
   properties: ParcelProperties;
@@ -65,17 +68,62 @@ export default function LandTrackApp() {
   const [mapStyle, setMapStyle] = useState<"street" | "satellite">("street");
   const [showContours, setShowContours] = useState(false);
   const [showForests, setShowForests] = useState(false);
+  const [user, setUser] = useState<User | null>(null);
+  const [showAuth, setShowAuth] = useState(false);
+  const favSyncRef = useRef(false);
   const tileLayerRef = useRef<LType.TileLayer | null>(null);
   const contourLayerRef = useRef<LType.TileLayer | null>(null);
   const forestLayerRef = useRef<LType.GeoJSON | null>(null);
   const countyLayerRef = useRef<LType.GeoJSON | null>(null);
 
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    supabase.from("favorites").select("*").eq("user_id", user.id).then(({ data: rows }) => {
+      if (cancelled || !rows) return;
+      const loaded: FavoritesMap = {};
+      for (const row of rows) {
+        const id = `${row.parcel_county}-${row.parcel_fid}`;
+        loaded[id] = {
+          properties: row.properties as ParcelProperties,
+          reachedOut: row.reached_out,
+          addedAt: new Date(row.created_at).getTime(),
+          lat: row.lat,
+          lng: row.lng,
+        };
+      }
+      setFavorites(loaded);
+      saveFavorites(loaded);
+      favSyncRef.current = true;
+    });
+    return () => { cancelled = true; };
+  }, [user]);
+
   const toggleFavorite = useCallback((p: ParcelProperties) => {
     setFavorites((prev) => {
       const id = uid(p);
       const next = { ...prev };
-      if (next[id]) delete next[id];
-      else {
+      if (next[id]) {
+        delete next[id];
+        if (user) {
+          supabase.from("favorites")
+            .delete()
+            .eq("user_id", user.id)
+            .eq("parcel_county", p.county)
+            .eq("parcel_fid", p.fid)
+            .then(() => {});
+        }
+      } else {
         let lat = 0, lng = 0;
         const layer = markersRef.current.get(id);
         if (layer && "getBounds" in layer) {
@@ -84,29 +132,59 @@ export default function LandTrackApp() {
           lng = center.lng;
         }
         next[id] = { properties: p, reachedOut: false, addedAt: Date.now(), lat, lng };
+        if (user) {
+          supabase.from("favorites").upsert({
+            user_id: user.id,
+            parcel_county: p.county,
+            parcel_fid: p.fid,
+            reached_out: false,
+            lat, lng,
+            properties: p,
+          }).then(() => {});
+        }
       }
       saveFavorites(next);
       return next;
     });
-  }, []);
+  }, [user]);
 
   const toggleReachedOut = useCallback((id: string) => {
     setFavorites((prev) => {
       if (!prev[id]) return prev;
-      const next = { ...prev, [id]: { ...prev[id], reachedOut: !prev[id].reachedOut } };
+      const newVal = !prev[id].reachedOut;
+      const next = { ...prev, [id]: { ...prev[id], reachedOut: newVal } };
       saveFavorites(next);
+      if (user) {
+        const p = prev[id].properties;
+        supabase.from("favorites")
+          .update({ reached_out: newVal })
+          .eq("user_id", user.id)
+          .eq("parcel_county", p.county)
+          .eq("parcel_fid", p.fid)
+          .then(() => {});
+      }
       return next;
     });
-  }, []);
+  }, [user]);
 
   const removeFavorite = useCallback((id: string) => {
     setFavorites((prev) => {
+      if (!prev[id]) return prev;
+      const p = prev[id].properties;
       const next = { ...prev };
       delete next[id];
       saveFavorites(next);
+      if (user) {
+        supabase.from("favorites")
+          .delete()
+          .eq("user_id", user.id)
+          .eq("parcel_county", p.county)
+          .eq("parcel_fid", p.fid)
+          .then(() => {});
+      }
       return next;
     });
-  }, []);
+  }, [user]);
 
   const mapRef = useRef<LType.Map | null>(null);
   const geoLayerRef = useRef<LType.GeoJSON | null>(null);
@@ -116,7 +194,6 @@ export default function LandTrackApp() {
   const leafletRef = useRef<typeof LType | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const initialFitDone = useRef(false);
-  const loadParcelsRef = useRef<(map?: LType.Map) => Promise<void>>(undefined);
 
   useEffect(() => {
     fetchStats().then((s) => {
@@ -178,11 +255,6 @@ export default function LandTrackApp() {
         })
         .catch(() => {});
 
-      loadParcels(map);
-      map.on("moveend", () => {
-        if (debounceRef.current) clearTimeout(debounceRef.current);
-        debounceRef.current = setTimeout(() => loadParcelsRef.current?.(map), 300);
-      });
     });
     return () => { cancelled = true; };
   }, [loading]);
@@ -318,12 +390,21 @@ export default function LandTrackApp() {
     }
   }, [countyFilter, minAcres, maxAcres, stateFilter, maxSaleYear, searchQuery, addressMismatchOnly, bordersForest, sortField, sortDir]);
 
-  loadParcelsRef.current = loadParcels;
-
   useEffect(() => {
     if (!mapRef.current || loading) return;
     loadParcels();
   }, [loadParcels, loading]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const handler = () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      debounceRef.current = setTimeout(() => loadParcels(), 300);
+    };
+    map.on("moveend", handler);
+    return () => { map.off("moveend", handler); };
+  }, [loadParcels]);
 
   useEffect(() => {
     const L = leafletRef.current;
@@ -414,6 +495,19 @@ export default function LandTrackApp() {
       const bounds = (layer as LType.Polygon).getBounds();
       mapRef.current.fitBounds(bounds, { padding: [60, 60], maxZoom: 15 });
       (layer as LType.Polygon).openPopup();
+    } else if (mapRef.current) {
+      fetchParcels({ search: p.taxidnum, county: p.county, limit: 1, zoom: 15 })
+        .then((result) => {
+          if (result.features.length > 0) {
+            const geom = result.features[0].geometry;
+            if (geom && geom.coordinates?.[0]?.[0]) {
+              const coords = geom.coordinates[0];
+              let latSum = 0, lngSum = 0;
+              for (const c of coords) { lngSum += c[0]; latSum += c[1]; }
+              mapRef.current?.flyTo([latSum / coords.length, lngSum / coords.length], 15);
+            }
+          }
+        });
     }
   }, []);
 
@@ -486,6 +580,24 @@ export default function LandTrackApp() {
             <span>&#9733;</span>
             Favorites{Object.keys(favorites).length > 0 && ` (${Object.keys(favorites).length})`}
           </button>
+          {user ? (
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-[#71717a] truncate max-w-[120px]">{user.email}</span>
+              <button
+                onClick={() => supabase.auth.signOut()}
+                className="px-2 py-1 bg-[#27272a] rounded text-[#d4d4d8] hover:bg-[#3f3f46] transition-colors"
+              >
+                Sign Out
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowAuth(true)}
+              className="px-2.5 py-1 bg-[#27272a] rounded text-[#d4d4d8] hover:bg-[#3f3f46] transition-colors"
+            >
+              Sign In
+            </button>
+          )}
           <button
             onClick={() => setSidebarOpen((v) => !v)}
             className="px-2 py-1 bg-[#27272a] rounded text-[#d4d4d8] hover:bg-[#3f3f46] transition-colors"
@@ -811,6 +923,7 @@ export default function LandTrackApp() {
           </aside>
         )}
       </div>
+      {showAuth && <AuthModal onClose={() => setShowAuth(false)} onAuth={() => {}} />}
     </div>
   );
 }
