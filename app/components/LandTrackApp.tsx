@@ -62,10 +62,11 @@ export default function LandTrackApp() {
   const [totalInView, setTotalInView] = useState(0);
   const [favorites, setFavorites] = useState<FavoritesMap>(loadFavorites);
   const [favoritesOpen, setFavoritesOpen] = useState(false);
-  const [mapStyle, setMapStyle] = useState<"street" | "satellite" | "terrain">("street");
+  const [mapStyle, setMapStyle] = useState<"street" | "satellite">("street");
+  const [showContours, setShowContours] = useState(false);
   const [showForests, setShowForests] = useState(false);
   const tileLayerRef = useRef<LType.TileLayer | null>(null);
-  const hillshadeRef = useRef<LType.TileLayer | null>(null);
+  const contourLayerRef = useRef<LType.TileLayer | null>(null);
   const forestLayerRef = useRef<LType.GeoJSON | null>(null);
   const countyLayerRef = useRef<LType.GeoJSON | null>(null);
 
@@ -193,12 +194,10 @@ export default function LandTrackApp() {
     const urls: Record<string, string> = {
       street: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
       satellite: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-      terrain: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
     };
     const attribs: Record<string, string> = {
       street: "&copy; OpenStreetMap contributors",
       satellite: "&copy; Esri, Maxar, Earthstar Geographics",
-      terrain: "&copy; Esri, Maxar | Hillshade: Esri",
     };
     const tile = L.tileLayer(urls[mapStyle], {
       attribution: attribs[mapStyle],
@@ -206,19 +205,25 @@ export default function LandTrackApp() {
     }).addTo(map);
     tileLayerRef.current = tile;
     tile.bringToBack();
-
-    if (hillshadeRef.current) {
-      map.removeLayer(hillshadeRef.current);
-      hillshadeRef.current = null;
-    }
-    if (mapStyle === "terrain") {
-      const hs = L.tileLayer(
-        "https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}",
-        { opacity: 0.45, maxZoom: 19 }
-      ).addTo(map);
-      hillshadeRef.current = hs;
-    }
   }, [mapStyle]);
+
+  useEffect(() => {
+    const L = leafletRef.current;
+    const map = mapRef.current;
+    if (!L || !map) return;
+
+    if (contourLayerRef.current) {
+      map.removeLayer(contourLayerRef.current);
+      contourLayerRef.current = null;
+    }
+    if (showContours) {
+      const contour = L.tileLayer(
+        "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+        { opacity: 0.45, maxZoom: 17, attribution: "&copy; OpenTopoMap" }
+      ).addTo(map);
+      contourLayerRef.current = contour;
+    }
+  }, [showContours]);
 
   useEffect(() => {
     const L = leafletRef.current;
@@ -680,15 +685,17 @@ export default function LandTrackApp() {
             >
               Satellite
             </button>
-            <button
-              onClick={() => setMapStyle("terrain")}
-              className={`px-2.5 py-1 text-[11px] font-medium rounded transition-colors ${
-                mapStyle === "terrain" ? "bg-[#0a0a0a] text-white" : "text-[#52525b] hover:bg-[#f4f4f5]"
-              }`}
-            >
-              Terrain
-            </button>
           </div>
+          <button
+            onClick={() => setShowContours((v) => !v)}
+            className={`px-2.5 py-1 text-[11px] font-medium rounded-lg shadow-md border transition-colors ${
+              showContours
+                ? "bg-[#78716c] text-white border-[#78716c]"
+                : "bg-white text-[#52525b] border-[#e4e4e7] hover:bg-[#f4f4f5]"
+            }`}
+          >
+            {showContours ? "Hide Contours" : "Contours"}
+          </button>
           </div>
         </div>
 
