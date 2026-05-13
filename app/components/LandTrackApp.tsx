@@ -7,6 +7,26 @@ import { fetchParcels, fetchStats } from "@/lib/api";
 import { COUNTY_COLORS, LAND_USE_LABELS } from "@/lib/constants";
 import type { ParcelProperties, GeoJSONCollection, GeoJSONFeature, StatsResponse, SortField, SortDir } from "@/lib/types";
 
+interface FavoriteEntry {
+  properties: ParcelProperties;
+  reachedOut: boolean;
+  addedAt: number;
+}
+
+type FavoritesMap = Record<string, FavoriteEntry>;
+
+function loadFavorites(): FavoritesMap {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = localStorage.getItem("landtrack_favorites");
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+
+function saveFavorites(favs: FavoritesMap) {
+  try { localStorage.setItem("landtrack_favorites", JSON.stringify(favs)); } catch {}
+}
+
 let leafletPromise: Promise<typeof LType> | null = null;
 function getLeaflet(): Promise<typeof LType> {
   if (!leafletPromise) leafletPromise = import("leaflet");
@@ -38,6 +58,39 @@ export default function LandTrackApp() {
   const [bordersForest, setBordersForest] = useState(false);
   const [detailParcel, setDetailParcel] = useState<ParcelProperties | null>(null);
   const [totalInView, setTotalInView] = useState(0);
+  const [favorites, setFavorites] = useState<FavoritesMap>(loadFavorites);
+  const [favoritesOpen, setFavoritesOpen] = useState(false);
+  const [mapStyle, setMapStyle] = useState<"street" | "satellite">("street");
+  const tileLayerRef = useRef<LType.TileLayer | null>(null);
+
+  const toggleFavorite = useCallback((p: ParcelProperties) => {
+    setFavorites((prev) => {
+      const id = uid(p);
+      const next = { ...prev };
+      if (next[id]) delete next[id];
+      else next[id] = { properties: p, reachedOut: false, addedAt: Date.now() };
+      saveFavorites(next);
+      return next;
+    });
+  }, []);
+
+  const toggleReachedOut = useCallback((id: string) => {
+    setFavorites((prev) => {
+      if (!prev[id]) return prev;
+      const next = { ...prev, [id]: { ...prev[id], reachedOut: !prev[id].reachedOut } };
+      saveFavorites(next);
+      return next;
+    });
+  }, []);
+
+  const removeFavorite = useCallback((id: string) => {
+    setFavorites((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      saveFavorites(next);
+      return next;
+    });
+  }, []);
 
   const mapRef = useRef<LType.Map | null>(null);
   const geoLayerRef = useRef<LType.GeoJSON | null>(null);
@@ -66,10 +119,11 @@ export default function LandTrackApp() {
         zoom: 8,
         zoomControl: true,
       });
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      const tile = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
         attribution: "&copy; OpenStreetMap contributors",
         maxZoom: 19,
       }).addTo(map);
+      tileLayerRef.current = tile;
       mapRef.current = map;
       loadParcels(map);
       map.on("moveend", () => {
@@ -79,6 +133,27 @@ export default function LandTrackApp() {
     });
     return () => { cancelled = true; };
   }, [loading]);
+
+  useEffect(() => {
+    const L = leafletRef.current;
+    const map = mapRef.current;
+    if (!L || !map || !tileLayerRef.current) return;
+    map.removeLayer(tileLayerRef.current);
+    const urls: Record<string, string> = {
+      street: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+      satellite: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    };
+    const attribs: Record<string, string> = {
+      street: "&copy; OpenStreetMap contributors",
+      satellite: "&copy; Esri, Maxar, Earthstar Geographics",
+    };
+    const tile = L.tileLayer(urls[mapStyle], {
+      attribution: attribs[mapStyle],
+      maxZoom: 19,
+    }).addTo(map);
+    tileLayerRef.current = tile;
+    tile.bringToBack();
+  }, [mapStyle]);
 
   const loadParcels = useCallback(async (map?: LType.Map) => {
     const m = map || mapRef.current;
@@ -260,12 +335,21 @@ export default function LandTrackApp() {
             ))}
           </div>
         </div>
-        <div className="flex items-center gap-4 text-xs text-[#a1a1aa]">
+        <div className="flex items-center gap-3 text-xs text-[#a1a1aa]">
           <span>
             <span className="text-[#e97316] font-semibold">{features.length.toLocaleString()}</span>
             {totalInView > features.length && <span> of {totalInView.toLocaleString()}</span>}
             {" "}parcels in view
           </span>
+          <button
+            onClick={() => setFavoritesOpen((v) => !v)}
+            className={`px-2.5 py-1 rounded transition-colors flex items-center gap-1.5 ${
+              favoritesOpen ? "bg-[#e97316] text-white" : "bg-[#27272a] text-[#d4d4d8] hover:bg-[#3f3f46]"
+            }`}
+          >
+            <span>&#9733;</span>
+            Favorites{Object.keys(favorites).length > 0 && ` (${Object.keys(favorites).length})`}
+          </button>
           <button
             onClick={() => setSidebarOpen((v) => !v)}
             className="px-2 py-1 bg-[#27272a] rounded text-[#d4d4d8] hover:bg-[#3f3f46] transition-colors"
@@ -339,7 +423,18 @@ export default function LandTrackApp() {
                     </div>
                     <div className="text-[11px] text-[#71717a]">{detailParcel.municipality} / {detailParcel.taxidnum}</div>
                   </div>
-                  <button onClick={() => setDetailParcel(null)} className="text-[#a1a1aa] hover:text-[#0a0a0a] text-lg leading-none">&times;</button>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => toggleFavorite(detailParcel)}
+                      className="text-lg leading-none hover:scale-110 transition-transform"
+                      title={favorites[uid(detailParcel)] ? "Remove from favorites" : "Add to favorites"}
+                    >
+                      {favorites[uid(detailParcel)]
+                        ? <span style={{ color: "#e97316" }}>&#9733;</span>
+                        : <span style={{ color: "#d4d4d8" }}>&#9734;</span>}
+                    </button>
+                    <button onClick={() => setDetailParcel(null)} className="text-[#a1a1aa] hover:text-[#0a0a0a] text-lg leading-none">&times;</button>
+                  </div>
                 </div>
                 {detailParcel.address_mismatch && (
                   <div className="bg-[#fff7ed] border border-[#fed7aa] rounded px-2 py-1 mb-2 text-[11px] text-[#c2410c] font-medium">Site address differs from mailing address</div>
@@ -363,7 +458,8 @@ export default function LandTrackApp() {
               </div>
             )}
 
-            <div className="grid grid-cols-[1fr_55px_55px_65px] gap-1 px-3 py-1.5 bg-[#fafafa] border-b border-[#e4e4e7] text-[10px] font-medium uppercase tracking-wider text-[#71717a]">
+            <div className="grid grid-cols-[20px_1fr_55px_55px_65px] gap-1 px-3 py-1.5 bg-[#fafafa] border-b border-[#e4e4e7] text-[10px] font-medium uppercase tracking-wider text-[#71717a]">
+              <span></span>
               <button onClick={() => handleSort("owner_name")} className="text-left hover:text-[#0a0a0a]">Owner{sortIcon("owner_name")}</button>
               <button onClick={() => handleSort("acres")} className="text-right hover:text-[#0a0a0a]">Acres{sortIcon("acres")}</button>
               <button onClick={() => handleSort("sale_year")} className="text-right hover:text-[#0a0a0a]">Year{sortIcon("sale_year")}</button>
@@ -375,16 +471,24 @@ export default function LandTrackApp() {
                 const p = f.properties;
                 const id = uid(p);
                 const isSelected = id === selectedUid;
+                const isFav = !!favorites[id];
                 const color = COUNTY_COLORS[p.county] || "#e97316";
                 return (
-                  <button
+                  <div
                     key={id}
-                    onClick={() => flyToParcel(p)}
-                    className={`w-full grid grid-cols-[1fr_55px_55px_65px] gap-1 px-3 py-1.5 text-left border-b border-[#f4f4f5] hover:bg-[#fafafa] transition-colors ${
+                    className={`w-full grid grid-cols-[20px_1fr_55px_55px_65px] gap-1 px-3 py-1.5 text-left border-b border-[#f4f4f5] hover:bg-[#fafafa] transition-colors cursor-pointer ${
                       isSelected ? "bg-[#fafafa]" : ""
                     }`}
                     style={isSelected ? { borderLeft: `3px solid ${color}` } : {}}
+                    onClick={() => flyToParcel(p)}
                   >
+                    <button
+                      onClick={(e) => { e.stopPropagation(); toggleFavorite(p); }}
+                      className="self-center text-sm leading-none hover:scale-125 transition-transform"
+                      title={isFav ? "Remove from favorites" : "Add to favorites"}
+                    >
+                      {isFav ? <span style={{ color: "#e97316" }}>&#9733;</span> : <span style={{ color: "#d4d4d8" }}>&#9734;</span>}
+                    </button>
                     <div className="min-w-0">
                       <div className="text-xs font-medium text-[#0a0a0a] truncate flex items-center gap-1.5">
                         <span className="inline-block w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
@@ -401,7 +505,7 @@ export default function LandTrackApp() {
                     <div className="text-[10px] text-right text-[#71717a] self-center">
                       {p.assessed_total > 0 ? fmt(p.assessed_total) : "-"}
                     </div>
-                  </button>
+                  </div>
                 );
               })}
               {totalInView > features.length && (
@@ -415,7 +519,110 @@ export default function LandTrackApp() {
 
         <div className="flex-1 relative">
           <div ref={mapContainerRef} id="map" />
+          <div className="absolute top-3 right-3 z-[1000] flex gap-1 bg-white rounded-lg shadow-md border border-[#e4e4e7] p-0.5">
+            <button
+              onClick={() => setMapStyle("street")}
+              className={`px-2.5 py-1 text-[11px] font-medium rounded transition-colors ${
+                mapStyle === "street" ? "bg-[#0a0a0a] text-white" : "text-[#52525b] hover:bg-[#f4f4f5]"
+              }`}
+            >
+              Map
+            </button>
+            <button
+              onClick={() => setMapStyle("satellite")}
+              className={`px-2.5 py-1 text-[11px] font-medium rounded transition-colors ${
+                mapStyle === "satellite" ? "bg-[#0a0a0a] text-white" : "text-[#52525b] hover:bg-[#f4f4f5]"
+              }`}
+            >
+              Satellite
+            </button>
+          </div>
         </div>
+
+        {favoritesOpen && (
+          <aside className="w-[380px] flex-shrink-0 border-l border-[#e4e4e7] flex flex-col bg-white">
+            <div className="p-3 border-b border-[#e4e4e7] flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-[#e97316] text-lg">&#9733;</span>
+                <h2 className="text-sm font-semibold text-[#0a0a0a]">Favorites List</h2>
+                <span className="text-[10px] text-[#a1a1aa]">({Object.keys(favorites).length})</span>
+              </div>
+              <button onClick={() => setFavoritesOpen(false)} className="text-[#a1a1aa] hover:text-[#0a0a0a] text-lg leading-none">&times;</button>
+            </div>
+
+            <div className="grid grid-cols-[1fr_70px_70px] gap-1 px-3 py-1.5 bg-[#fafafa] border-b border-[#e4e4e7] text-[10px] font-medium uppercase tracking-wider text-[#71717a]">
+              <span>Owner</span>
+              <span className="text-center">Reached Out</span>
+              <span className="text-right">Remove</span>
+            </div>
+
+            <div className="flex-1 overflow-y-auto">
+              {Object.keys(favorites).length === 0 ? (
+                <div className="p-6 text-center text-sm text-[#a1a1aa]">
+                  No favorites yet. Click the &#9734; star on any parcel to save it here.
+                </div>
+              ) : (
+                Object.entries(favorites)
+                  .sort(([, a], [, b]) => b.addedAt - a.addedAt)
+                  .map(([id, fav]) => {
+                    const p = fav.properties;
+                    const color = COUNTY_COLORS[p.county] || "#e97316";
+                    return (
+                      <div
+                        key={id}
+                        className="px-3 py-2 border-b border-[#f4f4f5] hover:bg-[#fafafa] transition-colors"
+                      >
+                        <div className="flex items-start justify-between mb-1">
+                          <div
+                            className="min-w-0 flex-1 cursor-pointer"
+                            onClick={() => flyToParcel(p)}
+                          >
+                            <div className="flex items-center gap-1.5 mb-0.5">
+                              <span className="text-[9px] px-1.5 py-0.5 rounded text-white font-semibold"
+                                style={{ backgroundColor: color }}>{p.county}</span>
+                              <span className="text-xs font-semibold text-[#0a0a0a] truncate">{p.owner_name}</span>
+                            </div>
+                            <div className="text-[10px] text-[#71717a]">
+                              {p.acres.toFixed(0)} ac &middot; {p.mailing_city}, {p.mailing_state} {p.mailing_zip}
+                            </div>
+                            <div className="text-[10px] text-[#a1a1aa] truncate">{p.mailing_street}</div>
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between mt-1.5">
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={fav.reachedOut}
+                              onChange={() => toggleReachedOut(id)}
+                              className="w-3.5 h-3.5 accent-[#16a34a] rounded"
+                            />
+                            <span className={`text-[11px] ${fav.reachedOut ? "text-[#16a34a] font-medium" : "text-[#71717a]"}`}>
+                              {fav.reachedOut ? "Reached out" : "Not contacted"}
+                            </span>
+                          </label>
+                          <button
+                            onClick={() => removeFavorite(id)}
+                            className="text-[10px] text-[#a1a1aa] hover:text-[#ef4444] transition-colors"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+              )}
+            </div>
+
+            {Object.keys(favorites).length > 0 && (
+              <div className="p-3 border-t border-[#e4e4e7] bg-[#fafafa]">
+                <div className="flex justify-between text-[11px] text-[#71717a]">
+                  <span>{Object.values(favorites).filter((f) => f.reachedOut).length} reached out</span>
+                  <span>{Object.values(favorites).filter((f) => !f.reachedOut).length} remaining</span>
+                </div>
+              </div>
+            )}
+          </aside>
+        )}
       </div>
     </div>
   );
