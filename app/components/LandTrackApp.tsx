@@ -194,6 +194,7 @@ export default function LandTrackApp() {
   const leafletRef = useRef<typeof LType | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const initialFitDone = useRef(false);
+  const popupOpenRef = useRef<string | null>(null);
 
   useEffect(() => {
     fetchStats().then((s) => {
@@ -450,6 +451,8 @@ export default function LandTrackApp() {
         `;
         lyr.bindPopup(popup, { maxWidth: 350 });
         lyr.on("click", () => { setSelectedUid(id); setDetailParcel(p); });
+        lyr.on("popupopen", () => { popupOpenRef.current = id; });
+        lyr.on("popupclose", () => { if (popupOpenRef.current === id) popupOpenRef.current = null; });
       },
     });
 
@@ -462,6 +465,12 @@ export default function LandTrackApp() {
         selLayer.setStyle({ color: "#0a0a0a", weight: 2, fillOpacity: 0.35 });
         selLayer.bringToFront();
       }
+    }
+
+    const reopenId = popupOpenRef.current;
+    if (reopenId) {
+      const reopenLayer = markersRef.current.get(reopenId);
+      if (reopenLayer) (reopenLayer as LType.Polygon).openPopup();
     }
   }, [data]);
 
