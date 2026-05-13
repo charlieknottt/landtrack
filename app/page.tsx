@@ -429,6 +429,7 @@ export default function Home() {
                       </div>
                       <div className="text-[10px] text-[#a1a1aa] truncate">
                         {p.mailing_city}, {p.mailing_state}
+                        <span className="ml-1.5 text-[#d4d4d8]">{p.taxidnum}</span>
                       </div>
                     </div>
                     <div className="text-xs text-right font-semibold text-[#e97316] self-center">
