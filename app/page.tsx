@@ -214,17 +214,17 @@ export default function Home() {
       style: (feature) => {
         const p = feature?.properties;
         const color = COUNTY_COLORS[p?.county] || "#e97316";
-        const isSel = uid(p) === selectedUid;
         return {
-          color: isSel ? "#0a0a0a" : color,
-          weight: isSel ? 3 : 1.5,
+          color: color,
+          weight: 1.5,
           fillColor: color,
-          fillOpacity: isSel ? 0.5 : 0.2,
+          fillOpacity: 0.2,
         };
       },
       onEachFeature: (feature, lyr) => {
         const p = feature.properties as ParcelProperties;
-        markersRef.current.set(uid(p), lyr);
+        const id = uid(p);
+        markersRef.current.set(id, lyr);
         const color = COUNTY_COLORS[p.county] || "#e97316";
         const mismatch = addressesDiffer(p);
         const popup = `
@@ -249,7 +249,7 @@ export default function Home() {
           </div>
         `;
         lyr.bindPopup(popup, { maxWidth: 350 });
-        lyr.on("click", () => { setSelectedUid(uid(p)); setDetailParcel(p); });
+        lyr.on("click", () => { setSelectedUid(id); setDetailParcel(p); });
       },
     });
 
@@ -260,7 +260,30 @@ export default function Home() {
       const bounds = layer.getBounds();
       if (bounds.isValid()) map.fitBounds(bounds, { padding: [20, 20] });
     }
-  }, [data, filtered, selectedUid]);
+  }, [data, filtered]);
+
+  // Separate effect for selection highlight - doesn't rebuild the layer
+  const prevSelectedRef = useRef<string | null>(null);
+  useEffect(() => {
+    const prev = prevSelectedRef.current;
+    prevSelectedRef.current = selectedUid;
+
+    if (prev) {
+      const prevLayer = markersRef.current.get(prev);
+      if (prevLayer && "setStyle" in prevLayer) {
+        const prevCounty = prev.split("-")[0];
+        const color = COUNTY_COLORS[prevCounty] || "#e97316";
+        prevLayer.setStyle({ color, weight: 1.5, fillOpacity: 0.2 });
+      }
+    }
+    if (selectedUid) {
+      const selLayer = markersRef.current.get(selectedUid);
+      if (selLayer && "setStyle" in selLayer) {
+        selLayer.setStyle({ color: "#0a0a0a", weight: 3, fillOpacity: 0.5 });
+        selLayer.bringToFront();
+      }
+    }
+  }, [selectedUid]);
 
   const flyToParcel = useCallback((p: ParcelProperties) => {
     const id = uid(p);
