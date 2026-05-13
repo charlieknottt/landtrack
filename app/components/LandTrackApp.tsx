@@ -116,6 +116,7 @@ export default function LandTrackApp() {
   const leafletRef = useRef<typeof LType | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const initialFitDone = useRef(false);
+  const loadParcelsRef = useRef<(map?: LType.Map) => Promise<void>>(undefined);
 
   useEffect(() => {
     fetchStats().then((s) => {
@@ -180,7 +181,7 @@ export default function LandTrackApp() {
       loadParcels(map);
       map.on("moveend", () => {
         if (debounceRef.current) clearTimeout(debounceRef.current);
-        debounceRef.current = setTimeout(() => loadParcels(map), 300);
+        debounceRef.current = setTimeout(() => loadParcelsRef.current?.(map), 300);
       });
     });
     return () => { cancelled = true; };
@@ -218,8 +219,8 @@ export default function LandTrackApp() {
     }
     if (showContours) {
       const contour = L.tileLayer(
-        "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
-        { opacity: 0.45, maxZoom: 17, attribution: "&copy; OpenTopoMap" }
+        "https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}",
+        { opacity: 0.5, maxZoom: 16, attribution: "&copy; USGS" }
       ).addTo(map);
       contourLayerRef.current = contour;
     }
@@ -316,6 +317,8 @@ export default function LandTrackApp() {
       console.error("Failed to load parcels:", err);
     }
   }, [countyFilter, minAcres, maxAcres, stateFilter, maxSaleYear, searchQuery, addressMismatchOnly, bordersForest, sortField, sortDir]);
+
+  loadParcelsRef.current = loadParcels;
 
   useEffect(() => {
     if (!mapRef.current || loading) return;
@@ -736,13 +739,28 @@ export default function LandTrackApp() {
                           <div
                             className="min-w-0 flex-1 cursor-pointer"
                             onClick={() => {
+                              setSelectedUid(id);
+                              setDetailParcel(p);
                               const layer = markersRef.current.get(id);
                               if (layer) {
                                 flyToParcel(p);
                               } else if (fav.lat && fav.lng && mapRef.current) {
                                 mapRef.current.flyTo([fav.lat, fav.lng], 14);
-                                setSelectedUid(id);
-                                setDetailParcel(p);
+                              } else if (mapRef.current) {
+                                fetchParcels({ search: p.taxidnum, county: p.county, limit: 1, zoom: 15 })
+                                  .then((result) => {
+                                    if (result.features.length > 0) {
+                                      const geom = result.features[0].geometry;
+                                      if (geom && geom.coordinates?.[0]?.[0]) {
+                                        const coords = geom.coordinates[0];
+                                        let latSum = 0, lngSum = 0;
+                                        for (const c of coords) { lngSum += c[0]; latSum += c[1]; }
+                                        const lat = latSum / coords.length;
+                                        const lng = lngSum / coords.length;
+                                        mapRef.current?.flyTo([lat, lng], 14);
+                                      }
+                                    }
+                                  });
                               }
                             }}
                           >
