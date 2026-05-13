@@ -11,6 +11,8 @@ interface FavoriteEntry {
   properties: ParcelProperties;
   reachedOut: boolean;
   addedAt: number;
+  lat?: number;
+  lng?: number;
 }
 
 type FavoritesMap = Record<string, FavoriteEntry>;
@@ -65,13 +67,23 @@ export default function LandTrackApp() {
   const tileLayerRef = useRef<LType.TileLayer | null>(null);
   const hillshadeRef = useRef<LType.TileLayer | null>(null);
   const forestLayerRef = useRef<LType.GeoJSON | null>(null);
+  const countyLayerRef = useRef<LType.GeoJSON | null>(null);
 
   const toggleFavorite = useCallback((p: ParcelProperties) => {
     setFavorites((prev) => {
       const id = uid(p);
       const next = { ...prev };
       if (next[id]) delete next[id];
-      else next[id] = { properties: p, reachedOut: false, addedAt: Date.now() };
+      else {
+        let lat = 0, lng = 0;
+        const layer = markersRef.current.get(id);
+        if (layer && "getBounds" in layer) {
+          const center = (layer as LType.Polygon).getBounds().getCenter();
+          lat = center.lat;
+          lng = center.lng;
+        }
+        next[id] = { properties: p, reachedOut: false, addedAt: Date.now(), lat, lng };
+      }
       saveFavorites(next);
       return next;
     });
@@ -128,6 +140,42 @@ export default function LandTrackApp() {
       }).addTo(map);
       tileLayerRef.current = tile;
       mapRef.current = map;
+
+      fetch("/api/counties")
+        .then((r) => r.json())
+        .then((geojson) => {
+          if (cancelled) return;
+          const countyLayer = L.geoJSON(geojson, {
+            style: () => ({
+              color: "#52525b",
+              weight: 2,
+              fillOpacity: 0,
+              dashArray: "6 3",
+            }),
+            onEachFeature: (feature, lyr) => {
+              const name = feature.properties?.NAME;
+              if (name) {
+                const center = (lyr as LType.Polygon).getBounds().getCenter();
+                const label = L.marker(center, {
+                  icon: L.divIcon({
+                    className: "",
+                    html: `<div style="font-family:system-ui;font-size:11px;font-weight:700;color:#3f3f46;text-transform:uppercase;letter-spacing:0.1em;white-space:nowrap;text-shadow:1px 1px 2px white,-1px -1px 2px white,1px -1px 2px white,-1px 1px 2px white">${name} Co.</div>`,
+                    iconSize: [0, 0],
+                    iconAnchor: [0, 0],
+                  }),
+                  interactive: false,
+                });
+                label.addTo(map);
+              }
+            },
+          });
+          countyLayer.addTo(map);
+          countyLayer.bringToBack();
+          if (tileLayerRef.current) tileLayerRef.current.bringToBack();
+          countyLayerRef.current = countyLayer;
+        })
+        .catch(() => {});
+
       loadParcels(map);
       map.on("moveend", () => {
         if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -322,7 +370,7 @@ export default function LandTrackApp() {
     if (selectedUid) {
       const selLayer = markersRef.current.get(selectedUid);
       if (selLayer && "setStyle" in selLayer) {
-        selLayer.setStyle({ color: "#0a0a0a", weight: 3, fillOpacity: 0.5 });
+        selLayer.setStyle({ color: "#0a0a0a", weight: 2, fillOpacity: 0.35 });
         selLayer.bringToFront();
         (selLayer as LType.Polygon).openPopup();
       }
@@ -344,7 +392,7 @@ export default function LandTrackApp() {
     if (selectedUid) {
       const selLayer = markersRef.current.get(selectedUid);
       if (selLayer && "setStyle" in selLayer) {
-        selLayer.setStyle({ color: "#0a0a0a", weight: 3, fillOpacity: 0.5 });
+        selLayer.setStyle({ color: "#0a0a0a", weight: 2, fillOpacity: 0.35 });
         selLayer.bringToFront();
       }
     }
@@ -681,7 +729,16 @@ export default function LandTrackApp() {
                         <div className="flex items-start justify-between mb-1">
                           <div
                             className="min-w-0 flex-1 cursor-pointer"
-                            onClick={() => flyToParcel(p)}
+                            onClick={() => {
+                              const layer = markersRef.current.get(id);
+                              if (layer) {
+                                flyToParcel(p);
+                              } else if (fav.lat && fav.lng && mapRef.current) {
+                                mapRef.current.flyTo([fav.lat, fav.lng], 14);
+                                setSelectedUid(id);
+                                setDetailParcel(p);
+                              }
+                            }}
                           >
                             <div className="flex items-center gap-1.5 mb-0.5">
                               <span className="text-[9px] px-1.5 py-0.5 rounded text-white font-semibold"
