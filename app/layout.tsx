@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "LandTrack - Bedford County Parcels",
-  description: "Rural PA land parcel viewer and filter tool",
+  title: "LandTrack - Rural PA Parcels",
+  description: "Rural PA land parcel viewer across Bedford, Potter, Huntingdon, Clinton, and Cameron counties",
 };
 
 export default function RootLayout({
