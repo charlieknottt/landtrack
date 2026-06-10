@@ -1,36 +1,45 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# LandTrack
 
-## Getting Started
+An interactive map for exploring and prospecting land parcels across seven Pennsylvania counties (Bedford, Potter, Huntingdon, Clinton, Cameron, Clearfield, and Lycoming).
 
-First, run the development server:
+LandTrack renders thousands of parcel boundaries on a Leaflet map, color-coded by county, with land-use filtering (forest, agricultural, residential, commercial, industrial, vacant, exempt), state forest overlays, and live summary stats for whatever is in view. Parcels can be favorited and tracked through an outreach workflow ("reached out" toggles persist per user).
+
+## Stack
+
+- **Next.js (App Router)** with React and TypeScript
+- **Leaflet** for map rendering, loaded lazily on the client
+- **Supabase** for parcel/forest data (PostGIS bounding-box RPCs) and authentication
+- **TanStack Virtual** for smooth scrolling through large parcel lists
+
+Parcel and forest queries hit Supabase RPC functions (`get_forests_in_bbox` and friends) scoped to the current map viewport, so only visible geometry is fetched.
+
+## Running locally
+
+1. Install dependencies:
+
+```bash
+npm install
+```
+
+2. Create `.env.local` with your Supabase project:
+
+```bash
+NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+```
+
+3. Start the dev server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The map expects Supabase tables of parcel and state forest geometry with bounding-box RPC functions. The schema mirrors standard county parcel exports (owner, acreage, land-use code, assessed value).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Features
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Viewport-driven parcel loading, so the map stays fast at any zoom level
+- County color coding and land-use filters that combine with the visible area
+- Summary statistics (parcel count, total acreage) for the current view
+- State forest boundary overlay for locating parcels adjacent to public land
+- Account login with favorites and outreach tracking that persist across sessions
