@@ -2,6 +2,8 @@
 
 An interactive map for exploring and prospecting land parcels across seven Pennsylvania counties (Bedford, Potter, Huntingdon, Clinton, Cameron, Clearfield, and Lycoming).
 
+**Live demo:** https://landtrack-nu.vercel.app
+
 LandTrack renders thousands of parcel boundaries on a Leaflet map, color-coded by county, with land-use filtering (forest, agricultural, residential, commercial, industrial, vacant, exempt), state forest overlays, and live summary stats for whatever is in view. Parcels can be favorited and tracked through an outreach workflow ("reached out" toggles persist per user).
 
 ## Stack
