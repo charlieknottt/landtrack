@@ -1,14 +1,15 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import type LType from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { fetchParcels, fetchStats, fetchForests } from "@/lib/api";
-import { COUNTY_COLORS, LAND_USE_LABELS } from "@/lib/constants";
+import { fetchParcels, fetchStats, fetchForests, startCheckout, openBillingPortal } from "@/lib/api";
+import { LAND_USE_LABELS, buildCountyColors, countyKey } from "@/lib/constants";
 import type { ParcelProperties, GeoJSONCollection, GeoJSONFeature, StatsResponse, SortField, SortDir } from "@/lib/types";
 import { supabase } from "@/lib/supabase";
 import type { User } from "@supabase/supabase-js";
 import AuthModal from "./AuthModal";
+import CountyPickerModal from "./CountyPickerModal";
 
 interface FavoriteEntry {
   properties: ParcelProperties;
@@ -20,16 +21,19 @@ interface FavoriteEntry {
 
 type FavoritesMap = Record<string, FavoriteEntry>;
 
-function loadFavorites(): FavoritesMap {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = localStorage.getItem("landtrack_favorites");
-    return raw ? JSON.parse(raw) : {};
-  } catch { return {}; }
-}
-
 function saveFavorites(favs: FavoritesMap) {
   try { localStorage.setItem("landtrack_favorites", JSON.stringify(favs)); } catch {}
+}
+
+const COUNTY_PREFS_KEY = "landtrack_counties";
+
+function loadLocalCountySelection(): string[] | null {
+  try {
+    const raw = localStorage.getItem(COUNTY_PREFS_KEY);
+    if (!raw) return null;
+    const keys = JSON.parse(raw);
+    return Array.isArray(keys) && keys.length ? keys : null;
+  } catch { return null; }
 }
 
 let leafletPromise: Promise<typeof LType> | null = null;
@@ -42,7 +46,7 @@ const fmt = (n: number) =>
   n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 
 function uid(p: ParcelProperties) {
-  return `${p.county}-${p.fid}`;
+  return `${p.state}-${p.county}-${p.fid}`;
 }
 
 export default function LandTrackApp() {
@@ -70,7 +74,18 @@ export default function LandTrackApp() {
   const [showForests, setShowForests] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [showAuth, setShowAuth] = useState(false);
+  const [isPro, setIsPro] = useState(false);
+  const [dataLocked, setDataLocked] = useState(false);
+  const [showUpgrade, setShowUpgrade] = useState(false);
+  const [upgradeLoading, setUpgradeLoading] = useState(false);
+  const [selectedCounties, setSelectedCounties] = useState<string[] | null>(null);
+  const [countyPickerOpen, setCountyPickerOpen] = useState(false);
+  const [firstTimePicker, setFirstTimePicker] = useState(false);
+  const [savingPrefs, setSavingPrefs] = useState(false);
+  const [mapReady, setMapReady] = useState(false);
   const favSyncRef = useRef(false);
+  const shouldFitRef = useRef(false);
+  const countyLabelsRef = useRef<LType.LayerGroup | null>(null);
   const tileLayerRef = useRef<LType.TileLayer | null>(null);
   const contourLayerRef = useRef<LType.TileLayer | null>(null);
   const forestLayerRef = useRef<LType.GeoJSON | null>(null);
@@ -86,34 +101,174 @@ export default function LandTrackApp() {
     return () => subscription.unsubscribe();
   }, []);
 
+  const fetchIsPro = useCallback(async (): Promise<boolean> => {
+    if (!user) return false;
+    const { data } = await supabase
+      .from("subscriptions")
+      .select("status, current_period_end")
+      .eq("user_id", user.id)
+      .maybeSingle();
+    return (
+      !!data &&
+      (data.status === "active" || data.status === "trialing") &&
+      (!data.current_period_end ||
+        new Date(data.current_period_end).getTime() + 24 * 60 * 60 * 1000 > Date.now())
+    );
+  }, [user]);
+
   useEffect(() => {
-    if (!user) {
-      setFavorites({});
-      saveFavorites({});
-      return;
-    }
     let cancelled = false;
-    supabase.from("favorites").select("*").eq("user_id", user.id).then(({ data: rows }) => {
-      if (cancelled || !rows) return;
+    fetchIsPro().then((v) => { if (!cancelled) setIsPro(v); });
+    return () => { cancelled = true; };
+  }, [fetchIsPro]);
+
+  // Returning from Stripe Checkout: poll briefly while the webhook lands
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("checkout") !== "success") return;
+    window.history.replaceState({}, "", window.location.pathname);
+    let tries = 0;
+    const timer = setInterval(() => {
+      fetchIsPro().then(setIsPro);
+      if (++tries >= 6) clearInterval(timer);
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [fetchIsPro]);
+
+  // County selection gates all parcel loading. It comes from the account
+  // (signed in) or localStorage (anonymous); without one, the picker opens
+  // before anything loads.
+  useEffect(() => {
+    let cancelled = false;
+    const fetchPrefs = async () => {
+      if (!user) {
+        const local = loadLocalCountySelection();
+        return local
+          ? { kind: "saved" as const, keys: local, persist: false }
+          : { kind: "missing" as const };
+      }
+      const { data } = await supabase
+        .from("user_preferences")
+        .select("selected_counties")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (data) {
+        return { kind: "saved" as const, keys: (data.selected_counties || []) as string[], persist: false };
+      }
+      // signed in for the first time: adopt a selection made while anonymous
+      const local = loadLocalCountySelection();
+      if (local) return { kind: "saved" as const, keys: local, persist: true };
+      return { kind: "missing" as const };
+    };
+    fetchPrefs().then((res) => {
+      if (cancelled) return;
+      if (res.kind === "saved") {
+        shouldFitRef.current = true;
+        setSelectedCounties(res.keys);
+        if (res.persist && user) {
+          supabase.from("user_preferences").upsert({
+            user_id: user.id,
+            selected_counties: res.keys,
+            updated_at: new Date().toISOString(),
+          }).then(() => {});
+        }
+      } else {
+        setFirstTimePicker(true);
+        setCountyPickerOpen(true);
+      }
+    });
+    return () => { cancelled = true; };
+  }, [user]);
+
+  const saveCountySelection = useCallback(async (keys: string[]) => {
+    setSavingPrefs(true);
+    try { localStorage.setItem(COUNTY_PREFS_KEY, JSON.stringify(keys)); } catch {}
+    if (user) {
+      await supabase.from("user_preferences").upsert({
+        user_id: user.id,
+        selected_counties: keys,
+        updated_at: new Date().toISOString(),
+      });
+    }
+    shouldFitRef.current = true;
+    setSelectedCounties(keys);
+    setCountyFilter((cur) => (cur && !keys.includes(cur) ? "" : cur));
+    setSavingPrefs(false);
+    setCountyPickerOpen(false);
+    setFirstTimePicker(false);
+  }, [user]);
+
+  const handleUpgrade = useCallback(async () => {
+    if (!user) { setShowAuth(true); return; }
+    setUpgradeLoading(true);
+    const url = await startCheckout();
+    if (url) window.location.href = url;
+    else setUpgradeLoading(false);
+  }, [user]);
+
+  const handleBilling = useCallback(async () => {
+    const url = await openBillingPortal();
+    if (url) window.location.href = url;
+  }, []);
+
+  const counties = useMemo(() => stats?.counties || [], [stats]);
+
+  const countyColors = useMemo(
+    () => buildCountyColors(counties.map((c) => countyKey(c.state, c.name))),
+    [counties]
+  );
+
+  const getColor = useCallback(
+    (p: Pick<ParcelProperties, "state" | "county">) =>
+      countyColors[countyKey(p.state, p.county)] || "#e97316",
+    [countyColors]
+  );
+
+  // Counties shown as header chips: only the user's selection, grouped by state
+  const groupedCounties = useMemo(() => {
+    const sel = selectedCounties?.length ? new Set(selectedCounties) : null;
+    const groups = new Map<string, typeof counties>();
+    for (const c of counties) {
+      if (sel && !sel.has(countyKey(c.state, c.name))) continue;
+      const list = groups.get(c.state) || [];
+      list.push(c);
+      groups.set(c.state, list);
+    }
+    return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b));
+  }, [counties, selectedCounties]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const fetchFavorites = async (): Promise<FavoritesMap> => {
+      if (!user) return {};
+      const { data: rows } = await supabase.from("favorites").select("*").eq("user_id", user.id);
       const loaded: FavoritesMap = {};
-      for (const row of rows) {
-        const id = `${row.parcel_county}-${row.parcel_fid}`;
+      for (const row of rows || []) {
+        const rowState = row.parcel_state || "PA";
+        const id = `${rowState}-${row.parcel_county}-${row.parcel_fid}`;
+        const props = row.properties as ParcelProperties;
         loaded[id] = {
-          properties: row.properties as ParcelProperties,
+          properties: { ...props, state: props.state || rowState },
           reachedOut: row.reached_out,
           addedAt: new Date(row.created_at).getTime(),
           lat: row.lat,
           lng: row.lng,
         };
       }
+      return loaded;
+    };
+    fetchFavorites().then((loaded) => {
+      if (cancelled) return;
       setFavorites(loaded);
       saveFavorites(loaded);
-      favSyncRef.current = true;
+      if (user) favSyncRef.current = true;
     });
     return () => { cancelled = true; };
   }, [user]);
 
   const toggleFavorite = useCallback((p: ParcelProperties) => {
+    if (!user) { setShowAuth(true); return; }
+    if (!isPro) { setShowUpgrade(true); return; }
     setFavorites((prev) => {
       const id = uid(p);
       const next = { ...prev };
@@ -123,6 +278,7 @@ export default function LandTrackApp() {
           supabase.from("favorites")
             .delete()
             .eq("user_id", user.id)
+            .eq("parcel_state", p.state)
             .eq("parcel_county", p.county)
             .eq("parcel_fid", p.fid)
             .then(() => {});
@@ -139,6 +295,7 @@ export default function LandTrackApp() {
         if (user) {
           supabase.from("favorites").upsert({
             user_id: user.id,
+            parcel_state: p.state,
             parcel_county: p.county,
             parcel_fid: p.fid,
             reached_out: false,
@@ -150,7 +307,7 @@ export default function LandTrackApp() {
       saveFavorites(next);
       return next;
     });
-  }, [user]);
+  }, [user, isPro]);
 
   const toggleReachedOut = useCallback((id: string) => {
     setFavorites((prev) => {
@@ -163,6 +320,7 @@ export default function LandTrackApp() {
         supabase.from("favorites")
           .update({ reached_out: newVal })
           .eq("user_id", user.id)
+          .eq("parcel_state", p.state)
           .eq("parcel_county", p.county)
           .eq("parcel_fid", p.fid)
           .then(() => {});
@@ -182,6 +340,7 @@ export default function LandTrackApp() {
         supabase.from("favorites")
           .delete()
           .eq("user_id", user.id)
+          .eq("parcel_state", p.state)
           .eq("parcel_county", p.county)
           .eq("parcel_fid", p.fid)
           .then(() => {});
@@ -224,46 +383,70 @@ export default function LandTrackApp() {
       }).addTo(map);
       tileLayerRef.current = tile;
       mapRef.current = map;
-
-      fetch("/api/counties")
-        .then((r) => r.json())
-        .then((geojson) => {
-          if (cancelled) return;
-          const countyLayer = L.geoJSON(geojson, {
-            style: () => ({
-              color: "#52525b",
-              weight: 2,
-              fillOpacity: 0,
-              dashArray: "6 3",
-            }),
-            onEachFeature: (feature, lyr) => {
-              const name = feature.properties?.NAME;
-              if (name) {
-                const center = (lyr as LType.Polygon).getBounds().getCenter();
-                const label = L.marker(center, {
-                  icon: L.divIcon({
-                    className: "",
-                    html: `<div style="font-family:system-ui;font-size:11px;font-weight:700;color:#3f3f46;text-transform:uppercase;letter-spacing:0.1em;white-space:nowrap;text-shadow:1px 1px 2px white,-1px -1px 2px white,1px -1px 2px white,-1px 1px 2px white">${name} Co.</div>`,
-                    iconSize: [0, 0],
-                    iconAnchor: [0, 0],
-                  }),
-                  interactive: false,
-                });
-                label.addTo(map);
-              }
-            },
-          });
-          countyLayer.addTo(map);
-          countyLayer.bringToBack();
-          if (tileLayerRef.current) tileLayerRef.current.bringToBack();
-          countyLayerRef.current = countyLayer;
-        })
-        .catch(() => {});
-
-      loadParcels(map);
+      setMapReady(true);
     });
     return () => { cancelled = true; };
   }, [loading]);
+
+  // County outlines + labels, only for the selected counties
+  const outlineKeysStr = useMemo(
+    () => (selectedCounties?.length ? [...selectedCounties].sort().join(",") : ""),
+    [selectedCounties]
+  );
+
+  useEffect(() => {
+    const L = leafletRef.current;
+    const map = mapRef.current;
+    if (!mapReady || !L || !map || !outlineKeysStr) return;
+    let cancelled = false;
+
+    fetch(`/api/counties?keys=${encodeURIComponent(outlineKeysStr)}`)
+      .then((r) => r.json())
+      .then((geojson) => {
+        if (cancelled) return;
+        if (countyLayerRef.current) map.removeLayer(countyLayerRef.current);
+        if (countyLabelsRef.current) map.removeLayer(countyLabelsRef.current);
+        const labels = L.layerGroup();
+        const countyLayer = L.geoJSON(geojson, {
+          style: () => ({
+            color: "#52525b",
+            weight: 2,
+            fillOpacity: 0,
+            dashArray: "6 3",
+          }),
+          onEachFeature: (feature, lyr) => {
+            const name = feature.properties?.NAME;
+            if (name) {
+              const center = (lyr as LType.Polygon).getBounds().getCenter();
+              const label = L.marker(center, {
+                icon: L.divIcon({
+                  className: "",
+                  html: `<div style="font-family:system-ui;font-size:11px;font-weight:700;color:#3f3f46;text-transform:uppercase;letter-spacing:0.1em;white-space:nowrap;text-shadow:1px 1px 2px white,-1px -1px 2px white,1px -1px 2px white,-1px 1px 2px white">${name} Co.</div>`,
+                  iconSize: [0, 0],
+                  iconAnchor: [0, 0],
+                }),
+                interactive: false,
+              });
+              labels.addLayer(label);
+            }
+          },
+        });
+        countyLayer.addTo(map);
+        labels.addTo(map);
+        countyLayer.bringToBack();
+        if (tileLayerRef.current) tileLayerRef.current.bringToBack();
+        countyLayerRef.current = countyLayer;
+        countyLabelsRef.current = labels;
+
+        if (shouldFitRef.current) {
+          shouldFitRef.current = false;
+          const bounds = countyLayer.getBounds();
+          if (bounds.isValid()) map.fitBounds(bounds, { padding: [30, 30] });
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [mapReady, outlineKeysStr]);
 
   useEffect(() => {
     const L = leafletRef.current;
@@ -362,14 +545,21 @@ export default function LandTrackApp() {
   const loadParcels = useCallback(async (map?: LType.Map) => {
     const m = map || mapRef.current;
     if (!m) return;
+    // No counties chosen yet: load nothing until the picker is answered
+    if (!selectedCounties?.length) return;
     const bounds = m.getBounds();
     const bbox = `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`;
     const zoom = m.getZoom();
 
+    // countyFilter is a 'ST|County' key
+    const [filterParcelState, filterCounty] = countyFilter ? countyFilter.split("|") : ["", ""];
+
     try {
       const result = await fetchParcels({
         bbox,
-        county: countyFilter || undefined,
+        county: filterCounty || undefined,
+        parcelState: filterParcelState || undefined,
+        countyKeys: selectedCounties,
         minAcres,
         maxAcres,
         state: stateFilter || undefined,
@@ -379,10 +569,11 @@ export default function LandTrackApp() {
         bordersForest: bordersForest || undefined,
         sort: sortField,
         dir: sortDir,
-        limit: 500,
+        limit: isPro ? 500 : 50,
         zoom,
       });
       setData(result);
+      setDataLocked(!!result.locked);
       setTotalInView(result.total || result.features.length);
 
       if (!initialFitDone.current && result.features.length > 0) {
@@ -394,12 +585,12 @@ export default function LandTrackApp() {
     } catch (err) {
       console.error("Failed to load parcels:", err);
     }
-  }, [countyFilter, minAcres, maxAcres, stateFilter, maxSaleYear, searchQuery, addressMismatchOnly, bordersForest, sortField, sortDir]);
+  }, [countyFilter, minAcres, maxAcres, stateFilter, maxSaleYear, searchQuery, addressMismatchOnly, bordersForest, sortField, sortDir, selectedCounties, isPro]);
 
   useEffect(() => {
-    if (!mapRef.current || loading) return;
+    if (!mapRef.current || loading || !mapReady) return;
     loadParcels();
-  }, [loadParcels, loading]);
+  }, [loadParcels, loading, mapReady]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -423,21 +614,24 @@ export default function LandTrackApp() {
 
     const layer = L.geoJSON(data as unknown as GeoJSON.GeoJsonObject, {
       style: (feature) => {
-        const p = feature?.properties;
-        const color = COUNTY_COLORS[p?.county] || "#e97316";
+        const p = feature?.properties as ParcelProperties | undefined;
+        const color = p ? getColor(p) : "#e97316";
         return { color, weight: 1.5, fillColor: color, fillOpacity: 0.2 };
       },
       onEachFeature: (feature, lyr) => {
         const p = feature.properties as ParcelProperties;
         const id = uid(p);
         markersRef.current.set(id, lyr);
-        const color = COUNTY_COLORS[p.county] || "#e97316";
+        const color = getColor(p);
         const mismatch = p.address_mismatch;
+        const ownerBlock = p.owner_name
+          ? `<span style="font-weight:700;font-size:15px;color:#0a0a0a">${p.owner_name}</span>`
+          : '<span style="font-weight:600;font-size:13px;color:#a1a1aa">&#128274; Owner hidden &mdash; Pro only</span>';
         const popup = `
           <div style="padding:14px;font-family:system-ui,sans-serif;font-size:13px;line-height:1.6;max-width:320px">
             <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
-              <span style="background:${color};color:white;font-size:10px;padding:1px 6px;border-radius:3px;font-weight:600">${p.county}</span>
-              <span style="font-weight:700;font-size:15px;color:#0a0a0a">${p.owner_name}</span>
+              <span style="background:${color};color:white;font-size:10px;padding:1px 6px;border-radius:3px;font-weight:600">${p.county}, ${p.state}</span>
+              ${ownerBlock}
             </div>
             <div style="color:#52525b;margin-bottom:10px;font-size:12px">${p.municipality || p.taxidnum}</div>
             ${mismatch ? '<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:4px;padding:4px 8px;margin-bottom:10px;font-size:11px;color:#c2410c;font-weight:600">Site &#8800; Mailing Address</div>' : ""}
@@ -446,7 +640,7 @@ export default function LandTrackApp() {
               <span style="color:#71717a">Acres</span><span style="font-weight:700;color:${color};font-size:14px">${p.acres.toFixed(1)}</span>
               <span style="color:#71717a">Tax ID</span><span>${p.taxidnum}</span>
               ${p.situs ? `<span style="color:#71717a">Site Addr</span><span>${p.situs}</span>` : ""}
-              <span style="color:#71717a">Mailing</span><span>${p.mailing_street}<br/>${p.mailing_city}, ${p.mailing_state} ${p.mailing_zip}</span>
+              ${p.mailing_street || p.mailing_city ? `<span style="color:#71717a">Mailing</span><span>${p.mailing_street}<br/>${p.mailing_city}, ${p.mailing_state} ${p.mailing_zip}</span>` : ""}
               ${p.sale_year && p.sale_year > 0 ? `<span style="color:#71717a">Last Sale</span><span>${p.sale_year}</span>` : ""}
               ${p.sale_amt > 0 ? `<span style="color:#71717a">Sale Price</span><span>${fmt(p.sale_amt)}</span>` : ""}
               ${p.assessed_total > 0 ? `<span style="color:#71717a">Assessed</span><span>${fmt(p.assessed_total)}</span>` : ""}
@@ -477,7 +671,7 @@ export default function LandTrackApp() {
       const reopenLayer = markersRef.current.get(reopenId);
       if (reopenLayer) (reopenLayer as LType.Polygon).openPopup();
     }
-  }, [data]);
+  }, [data, getColor]);
 
   const prevSelectedRef = useRef<string | null>(null);
   useEffect(() => {
@@ -486,8 +680,8 @@ export default function LandTrackApp() {
     if (prev) {
       const prevLayer = markersRef.current.get(prev);
       if (prevLayer && "setStyle" in prevLayer) {
-        const prevCounty = prev.split("-")[0];
-        const color = COUNTY_COLORS[prevCounty] || "#e97316";
+        const props = (prevLayer as { feature?: { properties?: ParcelProperties } }).feature?.properties;
+        const color = props ? getColor(props) : "#e97316";
         prevLayer.setStyle({ color, weight: 1.5, fillOpacity: 0.2 });
       }
     }
@@ -498,7 +692,7 @@ export default function LandTrackApp() {
         selLayer.bringToFront();
       }
     }
-  }, [selectedUid]);
+  }, [selectedUid, getColor]);
 
   const flyToParcel = useCallback((p: ParcelProperties) => {
     const id = uid(p);
@@ -510,7 +704,7 @@ export default function LandTrackApp() {
       mapRef.current.fitBounds(bounds, { padding: [60, 60], maxZoom: 15 });
       (layer as LType.Polygon).openPopup();
     } else if (mapRef.current) {
-      fetchParcels({ search: p.taxidnum, county: p.county, limit: 1, zoom: 15 })
+      fetchParcels({ search: p.taxidnum, county: p.county, parcelState: p.state, limit: 1, zoom: 15 })
         .then((result) => {
           if (result.features.length > 0) {
             const geom = result.features[0].geometry;
@@ -535,7 +729,6 @@ export default function LandTrackApp() {
     return sortDir === "asc" ? " ▲" : " ▼";
   };
 
-  const counties = stats?.counties || [];
   const states = stats?.states || [];
   const features = data?.features || [];
 
@@ -552,50 +745,89 @@ export default function LandTrackApp() {
 
   return (
     <div className="h-screen flex flex-col bg-white">
-      <header className="h-12 flex items-center justify-between px-4 bg-[#0a0a0a] text-white flex-shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="w-7 h-7 bg-[#e97316] rounded flex items-center justify-center text-xs font-bold">LT</div>
-          <h1 className="text-sm font-semibold tracking-wide">LandTrack</h1>
-          <div className="flex gap-1 ml-2">
-            {counties.map((c) => (
-              <button
-                key={c.name}
-                onClick={() => setCountyFilter(countyFilter === c.name ? "" : c.name)}
-                className={`text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wider transition-colors ${
-                  countyFilter === c.name
-                    ? "text-white"
-                    : countyFilter === ""
-                    ? "text-white/80 hover:text-white"
-                    : "text-white/30 hover:text-white/60"
-                }`}
-                style={{
-                  backgroundColor: countyFilter === c.name ? COUNTY_COLORS[c.name] : "transparent",
-                  borderWidth: 1,
-                  borderColor: (COUNTY_COLORS[c.name] || "#e97316") + (countyFilter === c.name ? "" : "60"),
-                }}
-              >
-                {c.name} ({c.count})
-              </button>
+      <header className="min-h-12 py-1 flex items-center justify-between gap-2 px-4 bg-[#0a0a0a] text-white flex-shrink-0">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-7 h-7 bg-[#e97316] rounded flex items-center justify-center text-xs font-bold flex-shrink-0">LT</div>
+          <h1 className="text-sm font-semibold tracking-wide flex-shrink-0">LandTrack</h1>
+          <div className="flex gap-x-2 gap-y-1 ml-2 flex-wrap items-center">
+            {groupedCounties.map(([st, stateCounties]) => (
+              <div key={st} className="flex items-center gap-1 flex-wrap">
+                <span className="text-[9px] text-[#71717a] font-bold uppercase tracking-wider">{st}</span>
+                {stateCounties.map((c) => {
+                  const key = countyKey(c.state, c.name);
+                  const active = countyFilter === key;
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => setCountyFilter(active ? "" : key)}
+                      className={`text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wider transition-colors ${
+                        active
+                          ? "text-white"
+                          : countyFilter === ""
+                          ? "text-white/80 hover:text-white"
+                          : "text-white/30 hover:text-white/60"
+                      }`}
+                      style={{
+                        backgroundColor: active ? countyColors[key] : "transparent",
+                        borderWidth: 1,
+                        borderColor: (countyColors[key] || "#e97316") + (active ? "" : "60"),
+                      }}
+                    >
+                      {c.name} ({c.count})
+                    </button>
+                  );
+                })}
+              </div>
             ))}
           </div>
         </div>
-        <div className="flex items-center gap-3 text-xs text-[#a1a1aa]">
+        <div className="flex items-center gap-3 text-xs text-[#a1a1aa] flex-shrink-0">
           <span>
             <span className="text-[#e97316] font-semibold">{features.length.toLocaleString()}</span>
             {totalInView > features.length && <span> of {totalInView.toLocaleString()}</span>}
             {" "}parcels in view
           </span>
+          {!isPro && (
+            <button
+              onClick={() => setShowUpgrade(true)}
+              className="px-2.5 py-1 bg-[#e97316] rounded text-white font-semibold hover:bg-[#c2410c] transition-colors"
+            >
+              Upgrade &mdash; $9/mo
+            </button>
+          )}
           <button
-            onClick={() => setFavoritesOpen((v) => !v)}
+            onClick={() => { setFirstTimePicker(false); setCountyPickerOpen(true); }}
+            className="px-2.5 py-1 bg-[#27272a] rounded text-[#d4d4d8] hover:bg-[#3f3f46] transition-colors"
+          >
+            Counties{selectedCounties?.length ? ` (${selectedCounties.length})` : ""}
+          </button>
+          <button
+            onClick={() => {
+              if (!user) { setShowAuth(true); return; }
+              if (!isPro) { setShowUpgrade(true); return; }
+              setFavoritesOpen((v) => !v);
+            }}
             className={`px-2.5 py-1 rounded transition-colors flex items-center gap-1.5 ${
               favoritesOpen ? "bg-[#e97316] text-white" : "bg-[#27272a] text-[#d4d4d8] hover:bg-[#3f3f46]"
             }`}
           >
             <span>&#9733;</span>
             Favorites{Object.keys(favorites).length > 0 && ` (${Object.keys(favorites).length})`}
+            {!isPro && <span className="text-[9px]">&#128274;</span>}
           </button>
           {user ? (
             <div className="flex items-center gap-2">
+              {isPro && (
+                <>
+                  <span className="text-[9px] px-1.5 py-0.5 bg-[#16a34a] text-white rounded font-bold uppercase tracking-wider">Pro</span>
+                  <button
+                    onClick={handleBilling}
+                    className="px-2 py-1 bg-[#27272a] rounded text-[#d4d4d8] hover:bg-[#3f3f46] transition-colors"
+                  >
+                    Billing
+                  </button>
+                </>
+              )}
               <span className="text-[10px] text-[#71717a] truncate max-w-[120px]">{user.email}</span>
               <button
                 onClick={() => supabase.auth.signOut()}
@@ -621,10 +853,20 @@ export default function LandTrackApp() {
         </div>
       </header>
 
+      {dataLocked && (
+        <div className="bg-[#fff7ed] border-b border-[#fed7aa] px-4 py-1.5 text-[11px] text-[#9a3412] flex items-center justify-center gap-2 flex-shrink-0">
+          <span>Free preview: up to 50 parcels per view, owner details hidden.</span>
+          <button onClick={handleUpgrade} disabled={upgradeLoading} className="font-semibold underline hover:text-[#c2410c] disabled:opacity-50">
+            {upgradeLoading ? "Redirecting..." : "Upgrade to Pro — $9/mo"}
+          </button>
+        </div>
+      )}
+
       <div className="flex flex-1 min-h-0">
         {sidebarOpen && (
           <aside className="w-[400px] flex-shrink-0 border-r border-[#e4e4e7] flex flex-col bg-white">
-            <div className="p-3 border-b border-[#e4e4e7] space-y-2.5">
+            <div className="p-3 border-b border-[#e4e4e7] relative">
+              <div className={`space-y-2.5 ${!isPro ? "pointer-events-none opacity-40 select-none" : ""}`}>
               <input
                 type="text"
                 placeholder="Search owner, municipality, tax ID, address..."
@@ -677,6 +919,19 @@ export default function LandTrackApp() {
                   onChange={(e) => setShowForests(e.target.checked)} className="w-3.5 h-3.5 accent-[#16a34a] rounded" />
                 <span className="text-xs text-[#3f3f46]">Show state forest boundaries on map</span>
               </label>
+              </div>
+              {!isPro && (
+                <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-white/60">
+                  <span className="text-xs font-medium text-[#3f3f46]">&#128274; Search &amp; filters are Pro features</span>
+                  <button
+                    onClick={handleUpgrade}
+                    disabled={upgradeLoading}
+                    className="px-3 py-1.5 bg-[#e97316] text-white text-xs font-semibold rounded-lg hover:bg-[#c2410c] transition-colors disabled:opacity-50"
+                  >
+                    {upgradeLoading ? "Redirecting..." : "Upgrade — $9/mo"}
+                  </button>
+                </div>
+              )}
             </div>
 
             {detailParcel && (
@@ -685,8 +940,12 @@ export default function LandTrackApp() {
                   <div>
                     <div className="flex items-center gap-2 mb-0.5">
                       <span className="text-[10px] px-1.5 py-0.5 rounded text-white font-semibold"
-                        style={{ backgroundColor: COUNTY_COLORS[detailParcel.county] }}>{detailParcel.county}</span>
-                      <span className="text-sm font-semibold text-[#0a0a0a]">{detailParcel.owner_name}</span>
+                        style={{ backgroundColor: getColor(detailParcel) }}>{detailParcel.county}, {detailParcel.state}</span>
+                      {detailParcel.owner_name ? (
+                        <span className="text-sm font-semibold text-[#0a0a0a]">{detailParcel.owner_name}</span>
+                      ) : (
+                        <span className="text-xs font-medium text-[#a1a1aa]">&#128274; Owner hidden &mdash; Pro only</span>
+                      )}
                     </div>
                     <div className="text-[11px] text-[#71717a]">{detailParcel.municipality} / {detailParcel.taxidnum}</div>
                   </div>
@@ -711,10 +970,12 @@ export default function LandTrackApp() {
                 )}
                 <div className="grid grid-cols-[80px_1fr] gap-y-1 gap-x-2 text-[11px]">
                   <span className="text-[#a1a1aa]">Acres</span>
-                  <span className="font-bold text-sm" style={{ color: COUNTY_COLORS[detailParcel.county] }}>{detailParcel.acres.toFixed(1)}</span>
+                  <span className="font-bold text-sm" style={{ color: getColor(detailParcel) }}>{detailParcel.acres.toFixed(1)}</span>
                   {detailParcel.situs && (<><span className="text-[#a1a1aa]">Site Addr</span><span>{detailParcel.situs}</span></>)}
-                  <span className="text-[#a1a1aa]">Mailing</span>
-                  <span>{detailParcel.mailing_street}<br />{detailParcel.mailing_city}, {detailParcel.mailing_state} {detailParcel.mailing_zip}</span>
+                  {(detailParcel.mailing_street || detailParcel.mailing_city) && (<>
+                    <span className="text-[#a1a1aa]">Mailing</span>
+                    <span>{detailParcel.mailing_street}<br />{detailParcel.mailing_city}, {detailParcel.mailing_state} {detailParcel.mailing_zip}</span>
+                  </>)}
                   {detailParcel.land_use && (<><span className="text-[#a1a1aa]">Land Use</span><span>{LAND_USE_LABELS[detailParcel.land_use] || detailParcel.land_use}</span></>)}
                   {detailParcel.sale_year && detailParcel.sale_year > 0 && (<><span className="text-[#a1a1aa]">Last Sale</span><span>{detailParcel.sale_year}</span></>)}
                   {detailParcel.sale_amt > 0 && (<><span className="text-[#a1a1aa]">Sale Price</span><span>{fmt(detailParcel.sale_amt)}</span></>)}
@@ -739,7 +1000,7 @@ export default function LandTrackApp() {
                 const id = uid(p);
                 const isSelected = id === selectedUid;
                 const isFav = !!favorites[id];
-                const color = COUNTY_COLORS[p.county] || "#e97316";
+                const color = getColor(p);
                 return (
                   <div
                     key={id}
@@ -759,10 +1020,10 @@ export default function LandTrackApp() {
                     <div className="min-w-0">
                       <div className="text-xs font-medium text-[#0a0a0a] truncate flex items-center gap-1.5">
                         <span className="inline-block w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
-                        {p.owner_name}
+                        {p.owner_name || <span className="text-[#a1a1aa]">&#128274; Owner hidden</span>}
                       </div>
                       <div className="text-[10px] text-[#a1a1aa] truncate pl-3.5">
-                        {p.mailing_city}, {p.mailing_state}
+                        {p.mailing_city ? `${p.mailing_city}, ${p.mailing_state}` : `${p.county}, ${p.state}`}
                       </div>
                     </div>
                     <div className="text-xs text-right font-semibold self-center" style={{ color }}>{p.acres.toFixed(0)}</div>
@@ -855,7 +1116,7 @@ export default function LandTrackApp() {
                   .sort(([, a], [, b]) => b.addedAt - a.addedAt)
                   .map(([id, fav]) => {
                     const p = fav.properties;
-                    const color = COUNTY_COLORS[p.county] || "#e97316";
+                    const color = getColor(p);
                     return (
                       <div
                         key={id}
@@ -873,7 +1134,7 @@ export default function LandTrackApp() {
                               } else if (fav.lat && fav.lng && mapRef.current) {
                                 mapRef.current.flyTo([fav.lat, fav.lng], 14);
                               } else if (mapRef.current) {
-                                fetchParcels({ search: p.taxidnum, county: p.county, limit: 1, zoom: 15 })
+                                fetchParcels({ search: p.taxidnum, county: p.county, parcelState: p.state, limit: 1, zoom: 15 })
                                   .then((result) => {
                                     if (result.features.length > 0) {
                                       const geom = result.features[0].geometry;
@@ -892,7 +1153,7 @@ export default function LandTrackApp() {
                           >
                             <div className="flex items-center gap-1.5 mb-0.5">
                               <span className="text-[9px] px-1.5 py-0.5 rounded text-white font-semibold"
-                                style={{ backgroundColor: color }}>{p.county}</span>
+                                style={{ backgroundColor: color }}>{p.county}, {p.state}</span>
                               <span className="text-xs font-semibold text-[#0a0a0a] truncate">{p.owner_name}</span>
                             </div>
                             <div className="text-[10px] text-[#71717a]">
@@ -938,6 +1199,43 @@ export default function LandTrackApp() {
         )}
       </div>
       {showAuth && <AuthModal onClose={() => setShowAuth(false)} onAuth={() => {}} />}
+      {countyPickerOpen && counties.length > 0 && (
+        <CountyPickerModal
+          counties={counties}
+          initialSelected={selectedCounties || []}
+          firstTime={firstTimePicker}
+          saving={savingPrefs}
+          onSave={saveCountySelection}
+          onClose={() => { setCountyPickerOpen(false); setFirstTimePicker(false); }}
+        />
+      )}
+      {showUpgrade && (
+        <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/40" onClick={() => setShowUpgrade(false)}>
+          <div className="bg-white rounded-xl shadow-xl w-[380px] p-6 text-center" onClick={(e) => e.stopPropagation()}>
+            <div className="text-2xl mb-2">&#128274;</div>
+            <h2 className="text-base font-semibold text-[#0a0a0a] mb-1">LandTrack Pro</h2>
+            <p className="text-sm text-[#52525b] mb-4">
+              The free preview shows up to 50 parcels per view with owner details hidden.
+            </p>
+            <ul className="text-xs text-[#3f3f46] text-left mx-auto mb-4 space-y-1.5 w-fit">
+              <li>&#10003; Owner names &amp; mailing addresses</li>
+              <li>&#10003; Unlimited parcels per view</li>
+              <li>&#10003; Search, filters &amp; sorting</li>
+              <li>&#10003; Favorites &amp; outreach tracking</li>
+            </ul>
+            <button
+              onClick={handleUpgrade}
+              disabled={upgradeLoading}
+              className="w-full py-2 bg-[#e97316] text-white text-sm font-medium rounded-lg hover:bg-[#c2410c] transition-colors disabled:opacity-50"
+            >
+              {upgradeLoading ? "Redirecting..." : "Subscribe — $9/month"}
+            </button>
+            <button onClick={() => setShowUpgrade(false)} className="mt-2 text-xs text-[#71717a] hover:text-[#0a0a0a] transition-colors">
+              Maybe later
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
