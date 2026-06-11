@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextRequest } from "next/server";
+import { isProRequest } from "@/lib/server-auth";
 
 function getSupabase() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -10,8 +11,12 @@ function getSupabase() {
 
 export const dynamic = "force-dynamic";
 
+// Free tier: at most this many parcels per viewport, owner details stripped
+const FREE_LIMIT = 50;
+
 export async function GET(request: NextRequest) {
   const sp = request.nextUrl.searchParams;
+  const isPro = await isProRequest(request);
 
   const bbox = sp.get("bbox")?.split(",").map(Number);
   const [bboxWest, bboxSouth, bboxEast, bboxNorth] = bbox && bbox.length === 4
@@ -27,13 +32,15 @@ export async function GET(request: NextRequest) {
     p_min_acres: Number(sp.get("minAcres")) || 0,
     p_max_acres: Number(sp.get("maxAcres")) || 99999,
     p_state: sp.get("state") || null,
+    p_parcel_state: sp.get("parcelState") || null,
+    p_county_keys: sp.get("countyKeys")?.split(",").filter(Boolean) || null,
     p_max_sale_year: sp.get("maxSaleYear") ? Number(sp.get("maxSaleYear")) : null,
     p_search: sp.get("search") || null,
     p_address_mismatch: sp.get("addressMismatch") === "true" ? true : null,
     p_borders_forest: sp.get("bordersForest") === "true" ? true : null,
     p_sort: sp.get("sort") || "acres",
     p_dir: sp.get("dir") || "desc",
-    p_limit: Math.min(Number(sp.get("limit")) || 500, 500),
+    p_limit: Math.min(Number(sp.get("limit")) || 500, isPro ? 500 : FREE_LIMIT),
     p_offset: Number(sp.get("offset")) || 0,
     p_zoom: Number(sp.get("zoom")) || 15,
   };
@@ -56,25 +63,28 @@ export async function GET(request: NextRequest) {
     type: "Feature" as const,
     geometry: row.geometry,
     properties: {
+      state: row.state,
       county: row.county,
       fid: row.fid,
       taxidnum: row.taxidnum,
       municipality: row.municipality,
       acres: row.acres,
-      owner_name: row.owner_name,
-      mailing_street: row.mailing_street,
-      mailing_city: row.mailing_city,
-      mailing_state: row.mailing_state,
-      mailing_zip: row.mailing_zip,
-      situs: row.situs,
+      // Owner identity and contact info are the paid product; the free
+      // tier only sees parcel shape, size, and valuation.
+      owner_name: isPro ? row.owner_name : "",
+      mailing_street: isPro ? row.mailing_street : "",
+      mailing_city: isPro ? row.mailing_city : "",
+      mailing_state: isPro ? row.mailing_state : "",
+      mailing_zip: isPro ? row.mailing_zip : "",
+      situs: isPro ? row.situs : "",
       land_use: row.land_use,
       sale_year: row.sale_year,
       sale_amt: row.sale_amt,
       assessed_total: row.assessed_total,
       land_val: row.land_val,
       improv_val: row.improv_val,
-      deed_book: row.deed_book,
-      deed_page: row.deed_page,
+      deed_book: isPro ? row.deed_book : "",
+      deed_page: isPro ? row.deed_page : "",
       address_mismatch: row.address_mismatch,
       borders_forest: row.borders_forest,
     },
@@ -84,5 +94,6 @@ export async function GET(request: NextRequest) {
     type: "FeatureCollection",
     features,
     total,
+    locked: !isPro,
   });
 }
