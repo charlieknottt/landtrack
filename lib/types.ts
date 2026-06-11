@@ -1,4 +1,5 @@
 export interface ParcelProperties {
+  state: string;
   county: string;
   fid: number;
   taxidnum: string;
@@ -32,6 +33,8 @@ export interface GeoJSONCollection {
   type: "FeatureCollection";
   features: GeoJSONFeature[];
   total?: number;
+  // true when the server stripped owner details for the free tier
+  locked?: boolean;
 }
 
 export type SortField = "acres" | "sale_year" | "assessed_total" | "owner_name";
@@ -42,7 +45,9 @@ export interface ParcelQuery {
   county?: string;
   minAcres?: number;
   maxAcres?: number;
-  state?: string;
+  state?: string; // owner mailing state
+  parcelState?: string; // state the parcel is located in
+  countyKeys?: string[]; // selected counties as "ST|County" keys
   maxSaleYear?: number;
   search?: string;
   addressMismatch?: boolean;
@@ -57,6 +62,6 @@ export interface ParcelQuery {
 export interface StatsResponse {
   total: number;
   filtered: number;
-  counties: { name: string; count: number }[];
+  counties: { state: string; name: string; count: number }[];
   states: string[];
 }

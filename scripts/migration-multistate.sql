@@ -1,67 +1,25 @@
-CREATE EXTENSION IF NOT EXISTS postgis;
+-- Migration: multi-state support
+-- Run this in the Supabase SQL Editor. Existing rows are backfilled as PA.
 
-CREATE TABLE parcels (
-  id              SERIAL PRIMARY KEY,
-  state           TEXT NOT NULL,
-  county          TEXT NOT NULL,
-  fid             INTEGER NOT NULL,
-  taxidnum        TEXT NOT NULL,
-  municipality    TEXT,
-  acres           REAL NOT NULL,
-  owner_name      TEXT NOT NULL,
-  mailing_street  TEXT,
-  mailing_city    TEXT,
-  mailing_state   TEXT,
-  mailing_zip     TEXT,
-  situs           TEXT,
-  land_use        TEXT,
-  sale_year       INTEGER,
-  sale_amt        REAL DEFAULT 0,
-  assessed_total  REAL DEFAULT 0,
-  land_val        REAL DEFAULT 0,
-  improv_val      REAL DEFAULT 0,
-  deed_book       TEXT,
-  deed_page       TEXT,
-  address_mismatch BOOLEAN DEFAULT FALSE,
-  borders_forest  BOOLEAN DEFAULT FALSE,
-  geom            GEOMETRY(Polygon, 4326) NOT NULL,
-  UNIQUE(state, county, fid)
-);
+-- 1. Add parcel state column and backfill
+ALTER TABLE parcels ADD COLUMN IF NOT EXISTS state TEXT;
+UPDATE parcels SET state = 'PA' WHERE state IS NULL;
+ALTER TABLE parcels ALTER COLUMN state SET NOT NULL;
 
-CREATE INDEX idx_parcels_geom ON parcels USING GIST (geom);
-CREATE INDEX idx_parcels_county ON parcels (county);
-CREATE INDEX idx_parcels_state_county ON parcels (state, county);
-CREATE INDEX idx_parcels_acres ON parcels (acres);
-CREATE INDEX idx_parcels_state ON parcels (mailing_state);
-CREATE INDEX idx_parcels_sale_year ON parcels (sale_year);
-CREATE INDEX idx_parcels_forest ON parcels (borders_forest) WHERE borders_forest;
+-- 2. Uniqueness must include state (county names repeat across states)
+ALTER TABLE parcels DROP CONSTRAINT IF EXISTS parcels_county_fid_key;
+ALTER TABLE parcels ADD CONSTRAINT parcels_state_county_fid_key UNIQUE (state, county, fid);
 
-ALTER TABLE parcels ADD COLUMN search_text TSVECTOR GENERATED ALWAYS AS (
-  to_tsvector('english',
-    coalesce(owner_name, '') || ' ' ||
-    coalesce(municipality, '') || ' ' ||
-    coalesce(taxidnum, '') || ' ' ||
-    coalesce(mailing_street, '') || ' ' ||
-    coalesce(mailing_city, '') || ' ' ||
-    coalesce(mailing_state, '') || ' ' ||
-    coalesce(mailing_zip, '') || ' ' ||
-    coalesce(situs, '') || ' ' ||
-    coalesce(county, '')
-  )
-) STORED;
-CREATE INDEX idx_parcels_search ON parcels USING GIN (search_text);
+CREATE INDEX IF NOT EXISTS idx_parcels_state_county ON parcels (state, county);
 
-CREATE TABLE state_forests (
-  id    SERIAL PRIMARY KEY,
-  state TEXT NOT NULL DEFAULT 'PA',
-  name  TEXT NOT NULL,
-  type  TEXT NOT NULL,
-  geom  GEOMETRY(MultiPolygon, 4326) NOT NULL
-);
-CREATE INDEX idx_forests_geom ON state_forests USING GIST (geom);
+-- 3. Forest/game-land boundaries get a state too
+ALTER TABLE state_forests ADD COLUMN IF NOT EXISTS state TEXT NOT NULL DEFAULT 'PA';
 
--- RPC function for viewport-based parcel queries
-CREATE OR REPLACE FUNCTION search_parcels(
+-- 4. search_parcels: return state, filter by parcel state and by selected
+--    (state, county) pairs. Return type changes, so drop first.
+DROP FUNCTION IF EXISTS search_parcels;
+
+CREATE FUNCTION search_parcels(
   bbox_west FLOAT DEFAULT -180,
   bbox_south FLOAT DEFAULT -90,
   bbox_east FLOAT DEFAULT 180,
@@ -69,7 +27,7 @@ CREATE OR REPLACE FUNCTION search_parcels(
   p_county TEXT DEFAULT NULL,
   p_min_acres REAL DEFAULT 0,
   p_max_acres REAL DEFAULT 99999,
-  p_state TEXT DEFAULT NULL,
+  p_state TEXT DEFAULT NULL,            -- owner mailing state (existing filter)
   p_max_sale_year INT DEFAULT NULL,
   p_search TEXT DEFAULT NULL,
   p_address_mismatch BOOLEAN DEFAULT NULL,
@@ -150,7 +108,7 @@ AS $$
   LIMIT p_limit OFFSET p_offset;
 $$;
 
--- Batch insert helper (called from import script)
+-- 5. insert_parcels_batch: accept state (legacy GeoJSON without it lands as PA)
 CREATE OR REPLACE FUNCTION insert_parcels_batch(parcels_json TEXT)
 RETURNS void
 LANGUAGE plpgsql
@@ -182,8 +140,16 @@ BEGIN
 END;
 $$;
 
--- Helper: county counts for stats endpoint
-CREATE OR REPLACE FUNCTION get_county_counts()
+-- 6. Favorites get a parcel state (existing rows are PA)
+ALTER TABLE favorites ADD COLUMN IF NOT EXISTS parcel_state TEXT NOT NULL DEFAULT 'PA';
+ALTER TABLE favorites DROP CONSTRAINT IF EXISTS favorites_user_id_parcel_county_parcel_fid_key;
+ALTER TABLE favorites ADD CONSTRAINT favorites_user_state_county_fid_key
+  UNIQUE (user_id, parcel_state, parcel_county, parcel_fid);
+
+-- 7. County counts now grouped by state. Return type changes, so drop first.
+DROP FUNCTION IF EXISTS get_county_counts;
+
+CREATE FUNCTION get_county_counts()
 RETURNS TABLE(state TEXT, county TEXT, count BIGINT)
 LANGUAGE sql STABLE
 AS $$
@@ -191,31 +157,4 @@ AS $$
   FROM parcels p
   GROUP BY p.state, p.county
   ORDER BY p.state, p.county;
-$$;
-
--- Helper: distinct mailing states
-CREATE OR REPLACE FUNCTION get_distinct_states()
-RETURNS TABLE(mailing_state TEXT)
-LANGUAGE sql STABLE
-AS $$
-  SELECT DISTINCT p.mailing_state
-  FROM parcels p
-  WHERE p.mailing_state IS NOT NULL AND p.mailing_state != ''
-  ORDER BY p.mailing_state;
-$$;
-
--- Helper: forest boundaries in viewport
-CREATE OR REPLACE FUNCTION get_forests_in_bbox(
-  bbox_west FLOAT DEFAULT -180,
-  bbox_south FLOAT DEFAULT -90,
-  bbox_east FLOAT DEFAULT 180,
-  bbox_north FLOAT DEFAULT 90
-)
-RETURNS TABLE(name TEXT, type TEXT, geometry JSON)
-LANGUAGE sql STABLE
-AS $$
-  SELECT f.name, f.type,
-    ST_AsGeoJSON(ST_Simplify(f.geom, 0.001))::json AS geometry
-  FROM state_forests f
-  WHERE f.geom && ST_MakeEnvelope(bbox_west, bbox_south, bbox_east, bbox_north, 4326);
 $$;

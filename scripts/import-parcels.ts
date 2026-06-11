@@ -20,7 +20,8 @@ function addressesDiffer(situs: string, street: string): boolean {
 
 async function main() {
   const geojsonPath = process.argv[2] || "../public/all_parcels.geojson";
-  console.log(`Reading ${geojsonPath}...`);
+  const defaultState = process.argv[3] || "PA";
+  console.log(`Reading ${geojsonPath} (default state: ${defaultState})...`);
   const raw = readFileSync(geojsonPath, "utf-8");
   const data = JSON.parse(raw);
   const features = data.features;
@@ -36,6 +37,7 @@ async function main() {
     const rows = batch.map((f: { properties: Record<string, unknown>; geometry: object }) => {
       const p = f.properties;
       return {
+        state: String(p.state || defaultState),
         county: p.county || "",
         fid: Number(p.fid) || 0,
         taxidnum: String(p.taxidnum || ""),

@@ -2,6 +2,7 @@
 CREATE TABLE favorites (
   id SERIAL PRIMARY KEY,
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  parcel_state TEXT NOT NULL DEFAULT 'PA',
   parcel_county TEXT NOT NULL,
   parcel_fid INTEGER NOT NULL,
   reached_out BOOLEAN DEFAULT FALSE,
@@ -9,7 +10,7 @@ CREATE TABLE favorites (
   lng REAL,
   properties JSONB NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW(),
-  UNIQUE(user_id, parcel_county, parcel_fid)
+  UNIQUE(user_id, parcel_state, parcel_county, parcel_fid)
 );
 
 CREATE INDEX idx_favorites_user ON favorites (user_id);

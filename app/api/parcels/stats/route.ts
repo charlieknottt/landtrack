@@ -28,7 +28,8 @@ export async function GET() {
   return Response.json({
     total: countResult.count || 0,
     filtered: countResult.count || 0,
-    counties: (countyResult.data || []).map((r: { county: string; count: number }) => ({
+    counties: (countyResult.data || []).map((r: { state: string; county: string; count: number }) => ({
+      state: r.state,
       name: r.county,
       count: r.count,
     })),
