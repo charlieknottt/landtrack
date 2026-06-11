@@ -1,3 +1,7 @@
+// Master switch for the $9/mo paywall. While false, everyone gets full
+// parcel data and the upgrade UI is hidden. Flip to true to turn it on.
+export const PAYWALL_ENABLED = false;
+
 // US state abbreviation -> census FIPS code (used for TIGERweb county outlines)
 export const STATE_FIPS: Record<string, string> = {
   AL: "01", AK: "02", AZ: "04", AR: "05", CA: "06", CO: "08", CT: "09",

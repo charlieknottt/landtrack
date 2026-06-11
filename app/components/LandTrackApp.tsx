@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import type LType from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { fetchParcels, fetchStats, fetchForests, startCheckout, openBillingPortal } from "@/lib/api";
-import { LAND_USE_LABELS, buildCountyColors, countyKey } from "@/lib/constants";
+import { LAND_USE_LABELS, buildCountyColors, countyKey, PAYWALL_ENABLED } from "@/lib/constants";
 import type { ParcelProperties, GeoJSONCollection, GeoJSONFeature, StatsResponse, SortField, SortDir } from "@/lib/types";
 import { supabase } from "@/lib/supabase";
 import type { User } from "@supabase/supabase-js";
@@ -74,7 +74,7 @@ export default function LandTrackApp() {
   const [showForests, setShowForests] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [showAuth, setShowAuth] = useState(false);
-  const [isPro, setIsPro] = useState(false);
+  const [isPro, setIsPro] = useState(!PAYWALL_ENABLED);
   const [dataLocked, setDataLocked] = useState(false);
   const [showUpgrade, setShowUpgrade] = useState(false);
   const [upgradeLoading, setUpgradeLoading] = useState(false);
@@ -102,6 +102,7 @@ export default function LandTrackApp() {
   }, []);
 
   const fetchIsPro = useCallback(async (): Promise<boolean> => {
+    if (!PAYWALL_ENABLED) return true;
     if (!user) return false;
     const { data } = await supabase
       .from("subscriptions")
@@ -817,7 +818,7 @@ export default function LandTrackApp() {
           </button>
           {user ? (
             <div className="flex items-center gap-2">
-              {isPro && (
+              {PAYWALL_ENABLED && isPro && (
                 <>
                   <span className="text-[9px] px-1.5 py-0.5 bg-[#16a34a] text-white rounded font-bold uppercase tracking-wider">Pro</span>
                   <button

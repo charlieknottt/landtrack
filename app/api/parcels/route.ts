@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextRequest } from "next/server";
 import { isProRequest } from "@/lib/server-auth";
+import { PAYWALL_ENABLED } from "@/lib/constants";
 
 function getSupabase() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -16,7 +17,7 @@ const FREE_LIMIT = 50;
 
 export async function GET(request: NextRequest) {
   const sp = request.nextUrl.searchParams;
-  const isPro = await isProRequest(request);
+  const isPro = !PAYWALL_ENABLED || (await isProRequest(request));
 
   const bbox = sp.get("bbox")?.split(",").map(Number);
   const [bboxWest, bboxSouth, bboxEast, bboxNorth] = bbox && bbox.length === 4
