@@ -115,6 +115,27 @@ def insert_batch(rows):
     return len(rows)
 
 
+CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".water-cache")
+
+
+def fetch_county_cached(session, state, name, fips):
+    """Fetch (or load from local cache) both NHD layers for a county."""
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    cache_path = os.path.join(CACHE_DIR, f"{state}_{name}.json")
+    if os.path.exists(cache_path):
+        with open(cache_path) as f:
+            cached = json.load(f)
+        print(f"  loaded {len(cached['streams'])} streams + {len(cached['lakes'])} waterbodies from cache")
+        return cached["streams"], cached["lakes"]
+
+    bbox = county_bbox(session, fips, name)
+    streams = fetch_layer(session, FLOWLINE_LAYER, "fcode = 46006", bbox, "streams")
+    lakes = fetch_layer(session, WATERBODY_LAYER, "ftype IN (390, 436)", bbox, "waterbodies")
+    with open(cache_path, "w") as f:
+        json.dump({"streams": streams, "lakes": lakes}, f)
+    return streams, lakes
+
+
 def main():
     session = requests.Session()
     seen = set()  # permanent_identifier dedupe across overlapping county boxes
@@ -123,10 +144,7 @@ def main():
 
     for state, name, fips in COUNTIES:
         print(f"\n{state} {name}:")
-        bbox = county_bbox(session, fips, name)
-
-        streams = fetch_layer(session, FLOWLINE_LAYER, "fcode = 46006", bbox, "streams")
-        lakes = fetch_layer(session, WATERBODY_LAYER, "ftype IN (390, 436)", bbox, "waterbodies")
+        streams, lakes = fetch_county_cached(session, state, name, fips)
 
         rows = []
         for feat in streams + lakes:
