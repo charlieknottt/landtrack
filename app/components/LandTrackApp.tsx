@@ -63,7 +63,10 @@ export default function LandTrackApp() {
   const [sortField, setSortField] = useState<SortField>("acres");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [mobileListOpen, setMobileListOpen] = useState(false);
   const [addressMismatchOnly, setAddressMismatchOnly] = useState(false);
+  const [absenteeOnly, setAbsenteeOnly] = useState(false);
+  const [hasWaterOnly, setHasWaterOnly] = useState(false);
   const [bordersForest, setBordersForest] = useState(false);
   const [detailParcel, setDetailParcel] = useState<ParcelProperties | null>(null);
   const [totalInView, setTotalInView] = useState(0);
@@ -567,6 +570,8 @@ export default function LandTrackApp() {
         maxSaleYear: maxSaleYear < 2026 ? maxSaleYear : undefined,
         search: searchQuery || undefined,
         addressMismatch: addressMismatchOnly || undefined,
+        absenteeOnly: absenteeOnly || undefined,
+        hasWater: hasWaterOnly || undefined,
         bordersForest: bordersForest || undefined,
         sort: sortField,
         dir: sortDir,
@@ -586,7 +591,7 @@ export default function LandTrackApp() {
     } catch (err) {
       console.error("Failed to load parcels:", err);
     }
-  }, [countyFilter, minAcres, maxAcres, stateFilter, maxSaleYear, searchQuery, addressMismatchOnly, bordersForest, sortField, sortDir, selectedCounties, isPro]);
+  }, [countyFilter, minAcres, maxAcres, stateFilter, maxSaleYear, searchQuery, addressMismatchOnly, absenteeOnly, hasWaterOnly, bordersForest, sortField, sortDir, selectedCounties, isPro]);
 
   useEffect(() => {
     if (!mapRef.current || loading || !mapReady) return;
@@ -635,8 +640,10 @@ export default function LandTrackApp() {
               ${ownerBlock}
             </div>
             <div style="color:#52525b;margin-bottom:10px;font-size:12px">${p.municipality || p.taxidnum}</div>
+            ${p.absentee ? '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:4px;padding:4px 8px;margin-bottom:10px;font-size:11px;color:#1d4ed8;font-weight:600">Absentee Owner</div>' : ""}
             ${mismatch ? '<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:4px;padding:4px 8px;margin-bottom:10px;font-size:11px;color:#c2410c;font-weight:600">Site &#8800; Mailing Address</div>' : ""}
             ${p.borders_forest ? '<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:4px;padding:4px 8px;margin-bottom:10px;font-size:11px;color:#16a34a;font-weight:600">Borders State Forest</div>' : ""}
+            ${p.has_water ? '<div style="background:#ecfeff;border:1px solid #a5f3fc;border-radius:4px;padding:4px 8px;margin-bottom:10px;font-size:11px;color:#0e7490;font-weight:600">Water on Property</div>' : ""}
             <div style="display:grid;grid-template-columns:90px 1fr;gap:3px 12px;font-size:12px">
               <span style="color:#71717a">Acres</span><span style="font-weight:700;color:${color};font-size:14px">${p.acres.toFixed(1)}</span>
               <span style="color:#71717a">Tax ID</span><span>${p.taxidnum}</span>
@@ -750,7 +757,7 @@ export default function LandTrackApp() {
         <div className="flex items-center gap-3 min-w-0">
           <div className="w-7 h-7 bg-[#e97316] rounded flex items-center justify-center text-xs font-bold flex-shrink-0">LT</div>
           <h1 className="text-sm font-semibold tracking-wide flex-shrink-0">LandTrack</h1>
-          <div className="flex gap-x-2 gap-y-1 ml-2 flex-wrap items-center">
+          <div className="hidden lg:flex gap-x-2 gap-y-1 ml-2 flex-wrap items-center">
             {groupedCounties.map(([st, stateCounties]) => (
               <div key={st} className="flex items-center gap-1 flex-wrap">
                 <span className="text-[9px] text-[#71717a] font-bold uppercase tracking-wider">{st}</span>
@@ -783,7 +790,7 @@ export default function LandTrackApp() {
           </div>
         </div>
         <div className="flex items-center gap-3 text-xs text-[#a1a1aa] flex-shrink-0">
-          <span>
+          <span className="hidden md:inline">
             <span className="text-[#e97316] font-semibold">{features.length.toLocaleString()}</span>
             {totalInView > features.length && <span> of {totalInView.toLocaleString()}</span>}
             {" "}parcels in view
@@ -813,7 +820,7 @@ export default function LandTrackApp() {
             }`}
           >
             <span>&#9733;</span>
-            Favorites{Object.keys(favorites).length > 0 && ` (${Object.keys(favorites).length})`}
+            <span className="hidden sm:inline">Favorites{Object.keys(favorites).length > 0 && ` (${Object.keys(favorites).length})`}</span>
             {!isPro && <span className="text-[9px]">&#128274;</span>}
           </button>
           {user ? (
@@ -829,7 +836,7 @@ export default function LandTrackApp() {
                   </button>
                 </>
               )}
-              <span className="text-[10px] text-[#71717a] truncate max-w-[120px]">{user.email}</span>
+              <span className="hidden md:inline text-[10px] text-[#71717a] truncate max-w-[120px]">{user.email}</span>
               <button
                 onClick={() => supabase.auth.signOut()}
                 className="px-2 py-1 bg-[#27272a] rounded text-[#d4d4d8] hover:bg-[#3f3f46] transition-colors"
@@ -847,7 +854,7 @@ export default function LandTrackApp() {
           )}
           <button
             onClick={() => setSidebarOpen((v) => !v)}
-            className="px-2 py-1 bg-[#27272a] rounded text-[#d4d4d8] hover:bg-[#3f3f46] transition-colors"
+            className="hidden md:block px-2 py-1 bg-[#27272a] rounded text-[#d4d4d8] hover:bg-[#3f3f46] transition-colors"
           >
             {sidebarOpen ? "Hide" : "Show"}
           </button>
@@ -864,8 +871,9 @@ export default function LandTrackApp() {
       )}
 
       <div className="flex flex-1 min-h-0">
-        {sidebarOpen && (
-          <aside className="w-[400px] flex-shrink-0 border-r border-[#e4e4e7] flex flex-col bg-white">
+        <aside
+          className={`${mobileListOpen ? "flex" : "hidden"} ${sidebarOpen ? "md:flex" : "md:hidden"} fixed md:static inset-x-0 top-12 bottom-12 z-[1400] w-full md:w-[400px] flex-shrink-0 border-r border-[#e4e4e7] flex-col bg-white`}
+        >
             <div className="p-3 border-b border-[#e4e4e7] relative">
               <div className={`space-y-2.5 ${!isPro ? "pointer-events-none opacity-40 select-none" : ""}`}>
               <input
@@ -906,9 +914,19 @@ export default function LandTrackApp() {
                 </div>
               </div>
               <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={absenteeOnly}
+                  onChange={(e) => setAbsenteeOnly(e.target.checked)} className="w-3.5 h-3.5 accent-[#e97316] rounded" />
+                <span className="text-xs text-[#3f3f46]">Absentee owners only (mails outside county)</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={addressMismatchOnly}
                   onChange={(e) => setAddressMismatchOnly(e.target.checked)} className="w-3.5 h-3.5 accent-[#e97316] rounded" />
                 <span className="text-xs text-[#3f3f46]">Site &#8800; Mailing address only</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={hasWaterOnly}
+                  onChange={(e) => setHasWaterOnly(e.target.checked)} className="w-3.5 h-3.5 accent-[#0891b2] rounded" />
+                <span className="text-xs text-[#3f3f46]">Water on property (river, pond, lake)</span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input type="checkbox" checked={bordersForest}
@@ -963,11 +981,17 @@ export default function LandTrackApp() {
                     <button onClick={() => setDetailParcel(null)} className="text-[#a1a1aa] hover:text-[#0a0a0a] text-lg leading-none">&times;</button>
                   </div>
                 </div>
+                {detailParcel.absentee && (
+                  <div className="bg-[#eff6ff] border border-[#bfdbfe] rounded px-2 py-1 mb-2 text-[11px] text-[#1d4ed8] font-medium">Absentee owner (mails outside county)</div>
+                )}
                 {detailParcel.address_mismatch && (
                   <div className="bg-[#fff7ed] border border-[#fed7aa] rounded px-2 py-1 mb-2 text-[11px] text-[#c2410c] font-medium">Site address differs from mailing address</div>
                 )}
                 {detailParcel.borders_forest && (
                   <div className="bg-[#f0fdf4] border border-[#bbf7d0] rounded px-2 py-1 mb-2 text-[11px] text-[#16a34a] font-medium">Borders state forest / game land</div>
+                )}
+                {detailParcel.has_water && (
+                  <div className="bg-[#ecfeff] border border-[#a5f3fc] rounded px-2 py-1 mb-2 text-[11px] text-[#0e7490] font-medium">Water on property (river, pond, or lake)</div>
                 )}
                 <div className="grid grid-cols-[80px_1fr] gap-y-1 gap-x-2 text-[11px]">
                   <span className="text-[#a1a1aa]">Acres</span>
@@ -1009,7 +1033,10 @@ export default function LandTrackApp() {
                       isSelected ? "bg-[#fafafa]" : ""
                     }`}
                     style={isSelected ? { borderLeft: `3px solid ${color}` } : {}}
-                    onClick={() => flyToParcel(p)}
+                    onClick={() => {
+                      flyToParcel(p);
+                      if (window.innerWidth < 768) setMobileListOpen(false);
+                    }}
                   >
                     <button
                       onClick={(e) => { e.stopPropagation(); toggleFavorite(p); }}
@@ -1044,11 +1071,10 @@ export default function LandTrackApp() {
               )}
             </div>
           </aside>
-        )}
 
         <div className="flex-1 relative">
           <div ref={mapContainerRef} id="map" />
-          <div className="absolute top-3 right-3 z-[1000] flex items-center gap-2">
+          <div className="absolute top-3 right-3 z-[1000] flex items-center gap-2 flex-wrap justify-end max-w-[75vw]">
             <button
               onClick={() => setShowForests((v) => !v)}
               className={`px-2.5 py-1 text-[11px] font-medium rounded-lg shadow-md border transition-colors ${
@@ -1090,8 +1116,9 @@ export default function LandTrackApp() {
           </div>
         </div>
 
-        {favoritesOpen && (
-          <aside className="w-[380px] flex-shrink-0 border-l border-[#e4e4e7] flex flex-col bg-white">
+        <aside
+          className={`${favoritesOpen ? "flex" : "hidden"} fixed md:static inset-x-0 top-12 bottom-12 z-[1450] w-full md:w-[380px] flex-shrink-0 border-l border-[#e4e4e7] flex-col bg-white`}
+        >
             <div className="p-3 border-b border-[#e4e4e7] flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="text-[#e97316] text-lg">&#9733;</span>
@@ -1129,6 +1156,7 @@ export default function LandTrackApp() {
                             onClick={() => {
                               setSelectedUid(id);
                               setDetailParcel(p);
+                              if (window.innerWidth < 768) setFavoritesOpen(false);
                               const layer = markersRef.current.get(id);
                               if (layer) {
                                 flyToParcel(p);
@@ -1197,7 +1225,21 @@ export default function LandTrackApp() {
               </div>
             )}
           </aside>
-        )}
+      </div>
+
+      <div className="md:hidden h-12 flex items-center justify-between px-4 bg-[#0a0a0a] flex-shrink-0 border-t border-[#27272a]">
+        <span className="text-xs text-[#a1a1aa]">
+          <span className="text-[#e97316] font-semibold">{features.length.toLocaleString()}</span>
+          {totalInView > features.length && ` of ${totalInView.toLocaleString()}`} parcels
+        </span>
+        <button
+          onClick={() => setMobileListOpen((v) => !v)}
+          className={`px-4 py-1.5 rounded text-xs font-semibold transition-colors ${
+            mobileListOpen ? "bg-[#27272a] text-[#d4d4d8]" : "bg-[#e97316] text-white"
+          }`}
+        >
+          {mobileListOpen ? "Show Map" : "List & Filters"}
+        </button>
       </div>
       {showAuth && <AuthModal onClose={() => setShowAuth(false)} onAuth={() => {}} />}
       {countyPickerOpen && counties.length > 0 && (
@@ -1212,7 +1254,7 @@ export default function LandTrackApp() {
       )}
       {showUpgrade && (
         <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/40" onClick={() => setShowUpgrade(false)}>
-          <div className="bg-white rounded-xl shadow-xl w-[380px] p-6 text-center" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-white rounded-xl shadow-xl w-[380px] max-w-[calc(100vw-2rem)] p-6 text-center" onClick={(e) => e.stopPropagation()}>
             <div className="text-2xl mb-2">&#128274;</div>
             <h2 className="text-base font-semibold text-[#0a0a0a] mb-1">LandTrack Pro</h2>
             <p className="text-sm text-[#52525b] mb-4">

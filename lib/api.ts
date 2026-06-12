@@ -26,6 +26,8 @@ export async function fetchParcels(query: ParcelQuery): Promise<GeoJSONCollectio
   if (query.search) params.set("search", query.search);
   if (query.addressMismatch) params.set("addressMismatch", "true");
   if (query.bordersForest) params.set("bordersForest", "true");
+  if (query.absenteeOnly) params.set("absentee", "true");
+  if (query.hasWater) params.set("hasWater", "true");
   if (query.sort) params.set("sort", query.sort);
   if (query.dir) params.set("dir", query.dir);
   if (query.limit != null) params.set("limit", String(query.limit));

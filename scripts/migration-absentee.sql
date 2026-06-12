@@ -1,81 +1,17 @@
-CREATE EXTENSION IF NOT EXISTS postgis;
+-- Migration: absentee becomes a data flag instead of an import precondition.
+-- Run in the Supabase SQL Editor (project pkkiqrncgjvxaslbesec).
 
-CREATE TABLE parcels (
-  id              SERIAL PRIMARY KEY,
-  state           TEXT NOT NULL,
-  county          TEXT NOT NULL,
-  fid             INTEGER NOT NULL,
-  taxidnum        TEXT NOT NULL,
-  municipality    TEXT,
-  acres           REAL NOT NULL,
-  owner_name      TEXT NOT NULL,
-  mailing_street  TEXT,
-  mailing_city    TEXT,
-  mailing_state   TEXT,
-  mailing_zip     TEXT,
-  situs           TEXT,
-  land_use        TEXT,
-  sale_year       INTEGER,
-  sale_amt        REAL DEFAULT 0,
-  assessed_total  REAL DEFAULT 0,
-  land_val        REAL DEFAULT 0,
-  improv_val      REAL DEFAULT 0,
-  deed_book       TEXT,
-  deed_page       TEXT,
-  address_mismatch BOOLEAN DEFAULT FALSE,
-  borders_forest  BOOLEAN DEFAULT FALSE,
-  absentee        BOOLEAN NOT NULL DEFAULT FALSE,
-  has_water       BOOLEAN NOT NULL DEFAULT FALSE,
-  geom            GEOMETRY(Polygon, 4326) NOT NULL,
-  UNIQUE(state, county, fid)
-);
+-- 1. Column. Everything currently in the DB came through the old absentee
+--    gate, so mark it all absentee for now; the re-import sets each row
+--    precisely from corrected ZIP lists.
+ALTER TABLE parcels ADD COLUMN IF NOT EXISTS absentee BOOLEAN NOT NULL DEFAULT FALSE;
+UPDATE parcels SET absentee = TRUE;
+CREATE INDEX IF NOT EXISTS idx_parcels_absentee ON parcels (absentee) WHERE absentee;
 
-CREATE INDEX idx_parcels_geom ON parcels USING GIST (geom);
-CREATE INDEX idx_parcels_county ON parcels (county);
-CREATE INDEX idx_parcels_state_county ON parcels (state, county);
-CREATE INDEX idx_parcels_acres ON parcels (acres);
-CREATE INDEX idx_parcels_state ON parcels (mailing_state);
-CREATE INDEX idx_parcels_sale_year ON parcels (sale_year);
-CREATE INDEX idx_parcels_forest ON parcels (borders_forest) WHERE borders_forest;
-CREATE INDEX idx_parcels_absentee ON parcels (absentee) WHERE absentee;
-CREATE INDEX idx_parcels_water ON parcels (has_water) WHERE has_water;
+-- 2. search_parcels: filter on and return the flag. Return type changes, so drop first.
+DROP FUNCTION IF EXISTS search_parcels;
 
-ALTER TABLE parcels ADD COLUMN search_text TSVECTOR GENERATED ALWAYS AS (
-  to_tsvector('english',
-    coalesce(owner_name, '') || ' ' ||
-    coalesce(municipality, '') || ' ' ||
-    coalesce(taxidnum, '') || ' ' ||
-    coalesce(mailing_street, '') || ' ' ||
-    coalesce(mailing_city, '') || ' ' ||
-    coalesce(mailing_state, '') || ' ' ||
-    coalesce(mailing_zip, '') || ' ' ||
-    coalesce(situs, '') || ' ' ||
-    coalesce(county, '')
-  )
-) STORED;
-CREATE INDEX idx_parcels_search ON parcels USING GIN (search_text);
-
-CREATE TABLE state_forests (
-  id    SERIAL PRIMARY KEY,
-  state TEXT NOT NULL DEFAULT 'PA',
-  name  TEXT NOT NULL,
-  type  TEXT NOT NULL,
-  geom  GEOMETRY(MultiPolygon, 4326) NOT NULL
-);
-CREATE INDEX idx_forests_geom ON state_forests USING GIST (geom);
-
--- Water features from USGS NHD (rivers/streams are lines, lakes/ponds polygons)
-CREATE TABLE water_features (
-  id    SERIAL PRIMARY KEY,
-  state TEXT NOT NULL,
-  name  TEXT,
-  type  TEXT NOT NULL,
-  geom  GEOMETRY(Geometry, 4326) NOT NULL
-);
-CREATE INDEX idx_water_geom ON water_features USING GIST (geom);
-
--- RPC function for viewport-based parcel queries
-CREATE OR REPLACE FUNCTION search_parcels(
+CREATE FUNCTION search_parcels(
   bbox_west FLOAT DEFAULT -180,
   bbox_south FLOAT DEFAULT -90,
   bbox_east FLOAT DEFAULT 180,
@@ -83,7 +19,7 @@ CREATE OR REPLACE FUNCTION search_parcels(
   p_county TEXT DEFAULT NULL,
   p_min_acres REAL DEFAULT 0,
   p_max_acres REAL DEFAULT 99999,
-  p_state TEXT DEFAULT NULL,
+  p_state TEXT DEFAULT NULL,            -- owner mailing state
   p_max_sale_year INT DEFAULT NULL,
   p_search TEXT DEFAULT NULL,
   p_address_mismatch BOOLEAN DEFAULT NULL,
@@ -95,8 +31,7 @@ CREATE OR REPLACE FUNCTION search_parcels(
   p_zoom INT DEFAULT 15,
   p_parcel_state TEXT DEFAULT NULL,     -- state the parcel is located in
   p_county_keys TEXT[] DEFAULT NULL,    -- selected counties as 'ST|County' keys
-  p_absentee BOOLEAN DEFAULT NULL,      -- true = absentee owners only
-  p_has_water BOOLEAN DEFAULT NULL      -- true = water on property only
+  p_absentee BOOLEAN DEFAULT NULL       -- true = absentee owners only
 )
 RETURNS TABLE(
   id INT,
@@ -123,7 +58,6 @@ RETURNS TABLE(
   address_mismatch BOOLEAN,
   borders_forest BOOLEAN,
   absentee BOOLEAN,
-  has_water BOOLEAN,
   geometry JSON,
   total_count BIGINT
 )
@@ -135,7 +69,7 @@ AS $$
     p.mailing_state, p.mailing_zip, p.situs, p.land_use,
     p.sale_year, p.sale_amt, p.assessed_total, p.land_val,
     p.improv_val, p.deed_book, p.deed_page,
-    p.address_mismatch, p.borders_forest, p.absentee, p.has_water,
+    p.address_mismatch, p.borders_forest, p.absentee,
     ST_AsGeoJSON(
       CASE
         WHEN p_zoom < 10 THEN ST_Simplify(p.geom, 0.005)
@@ -157,7 +91,6 @@ AS $$
     AND (p_address_mismatch IS NULL OR p.address_mismatch = p_address_mismatch)
     AND (p_borders_forest IS NULL OR p.borders_forest = p_borders_forest)
     AND (p_absentee IS NULL OR p.absentee = p_absentee)
-    AND (p_has_water IS NULL OR p.has_water = p_has_water)
   ORDER BY
     CASE WHEN p_sort = 'acres' AND p_dir = 'desc' THEN p.acres END DESC NULLS LAST,
     CASE WHEN p_sort = 'acres' AND p_dir = 'asc' THEN p.acres END ASC NULLS LAST,
@@ -170,7 +103,9 @@ AS $$
   LIMIT p_limit OFFSET p_offset;
 $$;
 
--- Batch insert helper (called from import script)
+-- 3. insert_parcels_batch becomes an upsert: re-importing refreshes
+--    attributes, geometry, and absentee, but preserves the computed
+--    borders_forest flag on existing rows.
 CREATE OR REPLACE FUNCTION insert_parcels_batch(parcels_json TEXT)
 RETURNS void
 LANGUAGE plpgsql
@@ -223,40 +158,9 @@ BEGIN
 END;
 $$;
 
--- Helper: county counts for stats endpoint
-CREATE OR REPLACE FUNCTION get_county_counts()
-RETURNS TABLE(state TEXT, county TEXT, count BIGINT)
-LANGUAGE sql STABLE
-AS $$
-  SELECT p.state, p.county, COUNT(*) AS count
-  FROM parcels p
-  GROUP BY p.state, p.county
-  ORDER BY p.state, p.county;
-$$;
-
--- Helper: distinct mailing states
-CREATE OR REPLACE FUNCTION get_distinct_states()
-RETURNS TABLE(mailing_state TEXT)
-LANGUAGE sql STABLE
-AS $$
-  SELECT DISTINCT p.mailing_state
-  FROM parcels p
-  WHERE p.mailing_state IS NOT NULL AND p.mailing_state != ''
-  ORDER BY p.mailing_state;
-$$;
-
--- Helper: forest boundaries in viewport
-CREATE OR REPLACE FUNCTION get_forests_in_bbox(
-  bbox_west FLOAT DEFAULT -180,
-  bbox_south FLOAT DEFAULT -90,
-  bbox_east FLOAT DEFAULT 180,
-  bbox_north FLOAT DEFAULT 90
-)
-RETURNS TABLE(name TEXT, type TEXT, geometry JSON)
-LANGUAGE sql STABLE
-AS $$
-  SELECT f.name, f.type,
-    ST_AsGeoJSON(ST_Simplify(f.geom, 0.001))::json AS geometry
-  FROM state_forests f
-  WHERE f.geom && ST_MakeEnvelope(bbox_west, bbox_south, bbox_east, bbox_north, 4326);
-$$;
+-- 4. AFTER the expanded re-import finishes, run this once so newly added
+--    parcels get their borders_forest flag (PA only; no AL forest data yet):
+-- UPDATE parcels SET borders_forest = EXISTS (
+--   SELECT 1 FROM state_forests sf
+--   WHERE ST_DWithin(parcels.geom, sf.geom, 0.0001)
+-- ) WHERE state = 'PA';

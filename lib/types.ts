@@ -21,6 +21,8 @@ export interface ParcelProperties {
   deed_page: string;
   address_mismatch: boolean;
   borders_forest: boolean;
+  absentee: boolean;
+  has_water: boolean;
 }
 
 export interface GeoJSONFeature {
@@ -52,6 +54,8 @@ export interface ParcelQuery {
   search?: string;
   addressMismatch?: boolean;
   bordersForest?: boolean;
+  absenteeOnly?: boolean;
+  hasWater?: boolean;
   sort?: SortField;
   dir?: SortDir;
   limit?: number;

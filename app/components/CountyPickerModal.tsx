@@ -60,7 +60,7 @@ export default function CountyPickerModal({ counties, initialSelected, firstTime
 
   return (
     <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/40" onClick={firstTime ? undefined : onClose}>
-      <div className="bg-white rounded-xl shadow-xl w-[440px] max-h-[80vh] flex flex-col p-6" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-white rounded-xl shadow-xl w-[440px] max-w-[calc(100vw-2rem)] max-h-[85vh] flex flex-col p-6" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-1">
           <h2 className="text-base font-semibold text-[#0a0a0a]">
             {firstTime ? "Welcome! Choose your counties" : "Choose Counties"}

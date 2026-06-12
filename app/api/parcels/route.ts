@@ -39,6 +39,10 @@ export async function GET(request: NextRequest) {
     p_search: sp.get("search") || null,
     p_address_mismatch: sp.get("addressMismatch") === "true" ? true : null,
     p_borders_forest: sp.get("bordersForest") === "true" ? true : null,
+    // Only sent when used, so the app keeps working against a database
+    // that hasn't run the absentee/water migrations yet
+    ...(sp.get("absentee") === "true" ? { p_absentee: true } : {}),
+    ...(sp.get("hasWater") === "true" ? { p_has_water: true } : {}),
     p_sort: sp.get("sort") || "acres",
     p_dir: sp.get("dir") || "desc",
     p_limit: Math.min(Number(sp.get("limit")) || 500, isPro ? 500 : FREE_LIMIT),
@@ -88,6 +92,8 @@ export async function GET(request: NextRequest) {
       deed_page: isPro ? row.deed_page : "",
       address_mismatch: row.address_mismatch,
       borders_forest: row.borders_forest,
+      absentee: row.absentee,
+      has_water: row.has_water,
     },
   }));
 

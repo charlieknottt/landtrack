@@ -59,6 +59,7 @@ async function main() {
         deed_page: String(p.deed_page || ""),
         address_mismatch: addressesDiffer(String(p.situs || ""), String(p.mailing_street || "")),
         borders_forest: false,
+        absentee: p.absentee === true || String(p.absentee).toLowerCase() === "true",
       };
     });
 

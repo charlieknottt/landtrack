@@ -36,7 +36,7 @@ export default function AuthModal({ onClose, onAuth }: Props) {
 
   return (
     <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/40" onClick={onClose}>
-      <div className="bg-white rounded-xl shadow-xl w-[360px] p-6" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-white rounded-xl shadow-xl w-[360px] max-w-[calc(100vw-2rem)] p-6" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-base font-semibold text-[#0a0a0a]">
             {mode === "login" ? "Sign In" : "Create Account"}
